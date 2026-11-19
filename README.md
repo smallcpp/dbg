@@ -4,7 +4,7 @@ Local GDB debugger for programs written in scpp. It launches GDB in MI mode, com
 
 `docs/debugger.md` is the guide. `docs/limits.md` records the cdbg behavior this program does not match, and why. `docs/coding-standard.md` is the smallcpp coding standard.
 
-Use the scripts in `scripts/`. Do not run `cmake` yourself to configure, build, test, or install. `scripts/setup` configures `build/` and starts a project shell. `build` in that shell compiles `bin/dbg`. `build test` runs the suite. `install` builds `dbg` and copies `bin/dbg` into the prefix. `scripts/clean` removes the build products in the checkout. It leaves an installed copy where it is.
+Use the scripts in `scripts/`. Do not run `cmake` yourself to configure, build, test, or install. `scripts/setup` configures `build/` and starts a project shell. `build` in that shell compiles `bin/dbg` and leaves the test programs unbuilt. `build test` builds `dbg` and those programs, then runs the suite. `install` builds `dbg` and copies `bin/dbg` into the prefix. `scripts/clean` removes the build products in the checkout. It leaves an installed copy where it is.
 
 `scpp` has to be on `PATH`, or installed at `$HOME/opt/smallcpp`. When `$HOME/.config/smallcpp/config.ini` exists, `scpp` reads header and library locations from it. GDB has to be on `PATH` unless `DBG_GDB` names it.
 
