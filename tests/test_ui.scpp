@@ -1,0 +1,76 @@
+#include "../src/ui.scpp"
+#include <unistd>
+
+int main(int argc, char **argv) {
+    DebuggerApp *app;
+    char dir[64];
+    int index;
+    int built;
+    File *file;
+    char buf[256];
+    unsigned long got;
+
+    if (argc < 2)
+        return 1;
+    index = 0;
+    while (index < 18) {
+        dir[index] = "/tmp/dbguiXXXXXX"[index];
+        index = index + 1;
+    }
+    dir[index] = 0;
+    if (mkdtemp(dir) == nullptr)
+        return 1;
+    if (chdir(dir) != 0)
+        return 1;
+    app = new DebuggerApp();
+    built = app->build();
+    if (built == 77) {
+        print("SKIP gtk display\n");
+        return 77;
+    }
+    if (require_test(built == 1, "build") == 0)
+        return 1;
+    if (require_test(
+            same_text(app->runButton->label(), "Run"),
+            "run button") == 0)
+        return 1;
+    app->do_run();
+    if (require_test(
+            app->statusLabel->text() != nullptr
+            && string_from(app->statusLabel->text())->find(
+                "DBG1000") >= 0,
+            "no target") == 0)
+        return 1;
+    if (app->open_source_file(argv[1], 0) == 0)
+        return 1;
+    app->findEntry->set_text("return sum");
+    app->do_find(1);
+    if (require_test(app->cursorLine == 12, "find line") == 0)
+        return 1;
+    app->do_find(1);
+    if (require_test(
+            same_text(app->statusLabel->text(), "Wrapped"),
+            "wrap") == 0)
+        return 1;
+    app->argEntry->set_text("one 'two words'");
+    app->dirEntry->set_text("");
+    app->envBuffer->set_text("");
+    app->prefStart->set_active(true);
+    app->apply_session();
+    file = fopen(".dbg.toml", "r");
+    if (require_test(file != nullptr, "settings") == 0)
+        return 1;
+    got = fread(
+            (void *)buf,
+            (unsigned long)1,
+            (unsigned long)255,
+            file);
+    buf[got] = 0;
+    fclose(file);
+    if (require_test(
+            string_from(buf)->find("break_at_start") >= 0,
+            "saved") == 0)
+        return 1;
+    print("ui 1\n");
+    return 0;
+}

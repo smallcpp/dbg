@@ -1,0 +1,1538 @@
+#ifndef DBG_SESSION
+#define DBG_SESSION
+
+/* Local GDB/MI session. Commands are synchronous: each call
+ * writes one command and reads until its result. Execution
+ * commands then wait until the inferior stops or exits.
+ * Program output is the target stream plus raw lines that
+ * GDB does not wrap. There is no pseudo-terminal. */
+
+#include <errno>
+#include <fcntl>
+#include <select>
+#include <signal>
+#include <spawn>
+#include <time>
+#include <unistd>
+#include "mi.scpp"
+#include "settings.scpp"
+
+enum {
+    DEBUG_EMPTY,
+    DEBUG_LOADED,
+    DEBUG_RUNNING,
+    DEBUG_STOPPED,
+    DEBUG_EXITED
+};
+
+enum {
+    PURPOSE_NONE,
+    PURPOSE_SETUP,
+    PURPOSE_LOAD,
+    PURPOSE_RUN,
+    PURPOSE_STEP,
+    PURPOSE_FRAMES,
+    PURPOSE_LOCALS,
+    PURPOSE_THREADS,
+    PURPOSE_BREAKS,
+    PURPOSE_WATCH,
+    PURPOSE_OTHER
+};
+
+class DebugBreak {
+public:
+    DebugBreak();
+    String *number;
+    String *file;
+    String *fullname;
+    String *func;
+    String *addr;
+    String *condition;
+    int line;
+    int enabled;
+    int pending;
+    int hits;
+};
+
+class DebugFrame {
+public:
+    DebugFrame();
+    String *func;
+    String *file;
+    String *fullname;
+    String *addr;
+    int level;
+    int line;
+};
+
+class DebugVar {
+public:
+    DebugVar();
+    String *name;
+    String *value;
+    int argument;
+};
+
+class DebugWatch {
+public:
+    DebugWatch();
+    String *expression;
+    String *value;
+    String *error;
+};
+
+class DebugThread {
+public:
+    DebugThread();
+    String *id;
+    String *name;
+    String *target;
+};
+
+class HitSnap {
+public:
+    HitSnap();
+    String *number;
+    int hits;
+    int enabled;
+};
+
+VECTOR(BreakVec, DebugBreak *)
+VECTOR(FrameVec, DebugFrame *)
+VECTOR(VarVec, DebugVar *)
+VECTOR(WatchList, DebugWatch *)
+VECTOR(ThreadVec, DebugThread *)
+VECTOR(SnapVec, HitSnap *)
+
+class DebugSession {
+public:
+    DebugSession();
+    ~DebugSession();
+    void open_gdb(const char *path);
+    void close_gdb(void);
+    void load_program(const char *path);
+    void set_arguments(const char *text);
+    void set_directory(const char *path);
+    void set_environment(const char *text);
+    void insert_breakpoint(const char *file, int line);
+    void delete_breakpoint(const char *number);
+    void enable_breakpoint(const char *number, int enabled);
+    void set_condition(const char *number, const char *expr);
+    void set_ignore(const char *number, int count);
+    void begin_run(void);
+    void wait_until_stop(void);
+    void run_program(void);
+    void continue_program(void);
+    void step_into(void);
+    void step_over(void);
+    void step_out(void);
+    void interrupt_program(void);
+    void restart_program(void);
+    void refresh_stack(void);
+    void refresh_locals(void);
+    void refresh_breaks(void);
+    void refresh_threads(void);
+    void refresh_watches(void);
+    void select_frame(int level);
+    void select_thread(const char *id);
+    void add_watch(const char *expr);
+    void remove_watch(long index);
+    void note_temp(const char *dir, const char *exe);
+    void update_status(void);
+    int state;
+    int breakAtStart;
+    int selectedFrame;
+    int stopLine;
+    int exitCode;
+    int haveExit;
+    int missedCount;
+    int sawPrompt;
+    String *status;
+    String *console;
+    String *program;
+    String *errorText;
+    String *executable;
+    String *stopFile;
+    String *stopFull;
+    String *stopFunc;
+    String *stopReason;
+    String *stopAddr;
+    String *stopBkpt;
+    String *lastNumber;
+    String *directory;
+    BreakVec *breaks;
+    FrameVec *frames;
+    VarVec *locals;
+    WatchList *watches;
+    ThreadVec *threads;
+    ArgumentList *arguments;
+    EnvironmentList *environment;
+    void fail(const char *code, const char *text);
+    void transact(const char *command, int purpose);
+    int try_transact(const char *command, int purpose);
+    void issue(const char *command, int purpose);
+    void wait_result(int timeoutMs);
+    void wait_stop(int timeoutMs, int stops, int exits);
+    void pump(int timeoutMs);
+    void write_all(const char *text);
+    void accept_bytes(const char *bytes, long count, int asError);
+    void drain(String *pending, int asError);
+    void accept_line(const char *line);
+    void append_console(const char *text);
+    void append_program(const char *text);
+    void apply_frames(void);
+    void apply_locals(void);
+    void apply_breaks(void);
+    void apply_threads(void);
+    void snapshot_hits(void);
+    void report_unreached(void);
+    void prepare_frame(void);
+    void send_runtime(void);
+    int rejected(const char *expr);
+    int same_place(void);
+    long now_ms(void);
+    MiParser *parser;
+    MiValue *lastValue;
+    String *lastMsg;
+    String *pendingOut;
+    String *pendingErr;
+    String *prevFile;
+    String *prevFunc;
+    String *prevAddr;
+    String *startBreak;
+    String *ownedDir;
+    String *ownedExe;
+    SnapVec *snaps;
+    int waitingToken;
+    int waitingPurpose;
+    int resultSerial;
+    int stopSerial;
+    int exitSerial;
+    int lastOk;
+    int prevLine;
+    int havePrev;
+    int runStops;
+    int runExits;
+    int toGdb;
+    int fromGdb;
+    int fromErr;
+    int gdbPid;
+    int inferiorPid;
+    int gdbDead;
+};
+
+DebugBreak::DebugBreak() {
+    number = new String();
+    file = new String();
+    fullname = new String();
+    func = new String();
+    addr = new String();
+    condition = new String();
+    line = 0;
+    enabled = 1;
+    pending = 0;
+    hits = 0;
+}
+
+DebugFrame::DebugFrame() {
+    func = new String();
+    file = new String();
+    fullname = new String();
+    addr = new String();
+    level = 0;
+    line = 0;
+}
+
+DebugVar::DebugVar() {
+    name = new String();
+    value = new String();
+    argument = 0;
+}
+
+DebugWatch::DebugWatch() {
+    expression = new String();
+    value = new String();
+    error = new String();
+}
+
+DebugThread::DebugThread() {
+    id = new String();
+    name = new String();
+    target = new String();
+}
+
+HitSnap::HitSnap() {
+    number = new String();
+    hits = 0;
+    enabled = 1;
+}
+
+DebugSession::DebugSession() {
+    state = DEBUG_EMPTY;
+    breakAtStart = 1;
+    selectedFrame = 0;
+    stopLine = 0;
+    exitCode = 0;
+    haveExit = 0;
+    missedCount = 0;
+    sawPrompt = 0;
+    status = new String();
+    console = new String();
+    program = new String();
+    errorText = new String();
+    executable = new String();
+    stopFile = new String();
+    stopFull = new String();
+    stopFunc = new String();
+    stopReason = new String();
+    stopAddr = new String();
+    stopBkpt = new String();
+    lastNumber = new String();
+    directory = new String();
+    breaks = new BreakVec();
+    frames = new FrameVec();
+    locals = new VarVec();
+    watches = new WatchList();
+    threads = new ThreadVec();
+    arguments = new ArgumentList();
+    environment = new EnvironmentList();
+    parser = new MiParser();
+    lastValue = new MiValue();
+    lastMsg = new String();
+    pendingOut = new String();
+    pendingErr = new String();
+    prevFile = new String();
+    prevFunc = new String();
+    prevAddr = new String();
+    startBreak = new String();
+    ownedDir = new String();
+    ownedExe = new String();
+    snaps = new SnapVec();
+    waitingToken = 0;
+    waitingPurpose = PURPOSE_NONE;
+    resultSerial = 0;
+    stopSerial = 0;
+    exitSerial = 0;
+    lastOk = 0;
+    prevLine = 0;
+    havePrev = 0;
+    runStops = 0;
+    runExits = 0;
+    toGdb = -1;
+    fromGdb = -1;
+    fromErr = -1;
+    gdbPid = 0;
+    inferiorPid = 0;
+    gdbDead = 0;
+    string_set(status, "No target");
+}
+
+DebugSession::~DebugSession() {
+    close_gdb();
+}
+
+long DebugSession::now_ms(void) {
+    struct timespec clock;
+
+    clock.tv_sec = 0;
+    clock.tv_nsec = 0;
+    clock_gettime(CLOCK_MONOTONIC, &clock);
+    return clock.tv_sec * 1000 + clock.tv_nsec / 1000000;
+}
+
+void DebugSession::fail(const char *code, const char *text) {
+    const char *msg;
+
+    if (text == nullptr)
+        text = "failed";
+    msg = format("dbg: error[{:s}]: {:s}", code, text);
+    string_set(errorText, msg);
+    append_console(errorText->c_str());
+    append_console("\n");
+    throw *new Exception(errorText->c_str());
+}
+
+void DebugSession::append_console(const char *text) {
+    if (text == nullptr)
+        return;
+    console->append(text);
+    if (console->size() > 65536)
+        console->truncate(0, console->size() - 65536);
+}
+
+void DebugSession::append_program(const char *text) {
+    if (text == nullptr)
+        return;
+    program->append(text);
+    if (program->size() > 65536)
+        program->truncate(0, program->size() - 65536);
+}
+
+void DebugSession::write_all(const char *text) {
+    long size;
+    long wrote;
+    long at;
+
+    if (toGdb < 0)
+        fail("DBG3003", "GDB input is closed");
+    size = text_length(text);
+    at = 0;
+    while (at < size) {
+        wrote = write(
+                toGdb,
+                (const void *)(text + at),
+                (unsigned long)(size - at));
+        if (wrote < 0) {
+            if (errno == EINTR)
+                continue;
+            fail("DBG3003", "GDB command write failed");
+        }
+        at = at + wrote;
+    }
+}
+
+void DebugSession::issue(const char *command, int purpose) {
+    String *line;
+
+    waitingToken = waitingToken + 1;
+    waitingPurpose = purpose;
+    lastOk = 0;
+    line = new String();
+    line->append(format("{}", waitingToken));
+    line->append(command);
+    line->append("\n");
+    write_all(line->c_str());
+}
+
+void DebugSession::accept_line(const char *line) {
+    int kind;
+    int token;
+    const char *msg;
+    MiValue *frame;
+
+    if (line == nullptr || line[0] == 0)
+        return;
+    if (starts_text(line, "(gdb)")) {
+        sawPrompt = 1;
+        return;
+    }
+    kind = (unsigned char)line[0];
+    if (is_digit(kind) == 0 && kind != '^' && kind != '*'
+            && kind != '=' && kind != '+' && kind != '~'
+            && kind != '@' && kind != '&') {
+        append_program(line);
+        append_program("\n");
+        return;
+    }
+    if (parser->parse(line) == 0) {
+        append_console("dbg: error[DBG3004]: malformed record\n");
+        return;
+    }
+    kind = (unsigned char)parser->kind->at(0);
+    if (kind == '~' || kind == '&') {
+        append_console(parser->data->text());
+        return;
+    }
+    if (kind == '@') {
+        append_program(parser->data->text());
+        return;
+    }
+    if (kind == '*') {
+        if (same_text(parser->result->c_str(), "stopped")) {
+            string_set(
+                    stopReason,
+                    parser->data->field("reason")->text());
+            string_set(
+                    stopBkpt,
+                    parser->data->field("bkptno")->text());
+            frame = parser->data->field("frame");
+            string_set(stopFile, frame->field("file")->text());
+            string_set(
+                    stopFull,
+                    frame->field("fullname")->text());
+            string_set(stopFunc, frame->field("func")->text());
+            string_set(stopAddr, frame->field("addr")->text());
+            stopLine = (int)strtol(
+                    frame->field("line")->text(),
+                    nullptr,
+                    10);
+            if (starts_text(stopReason->c_str(), "exited")) {
+                state = DEBUG_EXITED;
+                haveExit = 1;
+                if (same_text(
+                        stopReason->c_str(),
+                        "exited-normally"))
+                    exitCode = 0;
+                else
+                    exitCode = (int)strtol(
+                            parser->data->field(
+                                "exit-code")->text(),
+                            nullptr,
+                            8);
+                exitSerial = exitSerial + 1;
+            } else {
+                state = DEBUG_STOPPED;
+            }
+            stopSerial = stopSerial + 1;
+        } else if (same_text(parser->result->c_str(), "running")) {
+            state = DEBUG_RUNNING;
+        }
+        return;
+    }
+    if (kind == '=') {
+        if (same_text(
+                parser->result->c_str(),
+                "thread-group-started")) {
+            inferiorPid = (int)strtol(
+                    parser->data->field("pid")->text(),
+                    nullptr,
+                    10);
+        } else if (same_text(
+                parser->result->c_str(),
+                "thread-group-exited")) {
+            state = DEBUG_EXITED;
+            haveExit = 1;
+            if (parser->data->field("exit-code")->text()[0]
+                    != 0)
+                exitCode = (int)strtol(
+                        parser->data->field(
+                            "exit-code")->text(),
+                        nullptr,
+                        8);
+            exitSerial = exitSerial + 1;
+            inferiorPid = 0;
+        }
+        return;
+    }
+    if (kind != '^')
+        return;
+    token = 0;
+    if (parser->token->size() > 0)
+        token = (int)strtol(parser->token->c_str(), nullptr, 10);
+    if (token != waitingToken || waitingToken == 0)
+        return;
+    lastValue = parser->data;
+    if (same_text(parser->result->c_str(), "error")) {
+        lastOk = 0;
+        msg = parser->data->field("msg")->text();
+        string_set(lastMsg, msg);
+        string_set(errorText, msg);
+        append_console(msg);
+        append_console("\n");
+    } else {
+        lastOk = 1;
+        string_set(lastMsg, "");
+        if (same_text(parser->result->c_str(), "running"))
+            state = DEBUG_RUNNING;
+    }
+    resultSerial = resultSerial + 1;
+}
+
+void DebugSession::drain(String *pending, int asError) {
+    long at;
+    String *line;
+
+    at = pending->find('\n');
+    while (at >= 0) {
+        line = new String();
+        string_add_bytes(line, pending->c_str(), at);
+        if (line->size() > 0
+                && line->at(line->size() - 1) == '\r')
+            line->truncate(line->size() - 1, line->size());
+        pending->truncate(0, at + 1);
+        if (asError)
+            append_console(line->c_str());
+        else
+            accept_line(line->c_str());
+        if (asError)
+            append_console("\n");
+        at = pending->find('\n');
+    }
+    if (pending->size() > 1048576)
+        fail("DBG3004", "GDB record exceeds 1 MiB");
+}
+
+void DebugSession::accept_bytes(
+        const char *bytes,
+        long count,
+        int asError) {
+    if (asError) {
+        string_add_bytes(pendingErr, bytes, count);
+        drain(pendingErr, 1);
+    } else {
+        string_add_bytes(pendingOut, bytes, count);
+        drain(pendingOut, 0);
+    }
+}
+
+void DebugSession::pump(int timeoutMs) {
+    fd_set reads;
+    struct timeval limit;
+    char buf[4096];
+    long count;
+    int ready;
+    int maxFd;
+
+    if (fromGdb < 0)
+        fail("DBG3002", "GDB is not running");
+    FD_ZERO(&reads);
+    FD_SET(fromGdb, &reads);
+    maxFd = fromGdb;
+    if (fromErr >= 0) {
+        FD_SET(fromErr, &reads);
+        if (fromErr > maxFd)
+            maxFd = fromErr;
+    }
+    limit.tv_sec = timeoutMs / 1000;
+    limit.tv_usec = (timeoutMs % 1000) * 1000;
+    ready = select(maxFd + 1, &reads, nullptr, nullptr, &limit);
+    if (ready < 0) {
+        if (errno == EINTR)
+            return;
+        fail("DBG3003", "GDB read failed");
+    }
+    if (ready == 0)
+        return;
+    if (FD_ISSET(fromGdb, &reads) != 0) {
+        count = read(fromGdb, (void *)buf, 4096);
+        if (count > 0)
+            accept_bytes(buf, count, 0);
+        else if (count == 0)
+            gdbDead = 1;
+    }
+    if (fromErr >= 0 && FD_ISSET(fromErr, &reads) != 0) {
+        count = read(fromErr, (void *)buf, 4096);
+        if (count > 0)
+            accept_bytes(buf, count, 1);
+    }
+}
+
+void DebugSession::wait_result(int timeoutMs) {
+    int serial;
+    long start;
+
+    serial = resultSerial;
+    start = now_ms();
+    while (resultSerial == serial) {
+        if (gdbDead != 0)
+            fail("DBG3002", "GDB exited");
+        if (now_ms() - start > timeoutMs)
+            fail("DBG3002", "GDB did not answer");
+        pump(200);
+    }
+    if (lastOk == 0)
+        fail("DBG3002", lastMsg->c_str());
+}
+
+void DebugSession::transact(const char *command, int purpose) {
+    issue(command, purpose);
+    wait_result(8000);
+}
+
+int DebugSession::try_transact(
+        const char *command,
+        int purpose) {
+    try {
+        transact(command, purpose);
+        return 1;
+    } catch (Exception error) {
+        (void)error;
+        return 0;
+    }
+}
+
+void DebugSession::wait_stop(int timeoutMs, int stops, int exits) {
+    long start;
+
+    start = now_ms();
+    while (stopSerial == stops && exitSerial == exits) {
+        if (gdbDead != 0)
+            fail("DBG3002", "GDB exited");
+        if (now_ms() - start > timeoutMs)
+            fail("DBG3002", "GDB did not stop");
+        pump(200);
+    }
+}
+
+void DebugSession::open_gdb(const char *path) {
+    int input[2];
+    int output[2];
+    int errors[2];
+    int spawned;
+    pid_t pid;
+    posix_spawn_file_actions_t actions;
+    posix_spawnattr_t attr;
+    char *arg0;
+    char *arg1;
+    char *arg2;
+    char *arg3;
+    char *arg4;
+    char *arg5;
+    char *argv[7];
+    long start;
+
+    if (path == nullptr || path[0] == 0)
+        path = "gdb";
+    signal(SIGPIPE, SIG_IGN);
+    if (pipe(input) != 0 || pipe(output) != 0 || pipe(errors) != 0)
+        fail("DBG3003", "could not allocate GDB pipes");
+    arg0 = text_copy(path);
+    arg1 = text_copy("--nx");
+    arg2 = text_copy("--quiet");
+    arg3 = text_copy("--interpreter=mi2");
+    arg4 = text_copy("-iex");
+    arg5 = text_copy("set auto-load off");
+    argv[0] = arg0;
+    argv[1] = arg1;
+    argv[2] = arg2;
+    argv[3] = arg3;
+    argv[4] = arg4;
+    argv[5] = arg5;
+    argv[6] = nullptr;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_adddup2(&actions, input[0], 0);
+    posix_spawn_file_actions_adddup2(&actions, output[1], 1);
+    posix_spawn_file_actions_adddup2(&actions, errors[1], 2);
+    posix_spawn_file_actions_addclose(&actions, input[0]);
+    posix_spawn_file_actions_addclose(&actions, input[1]);
+    posix_spawn_file_actions_addclose(&actions, output[0]);
+    posix_spawn_file_actions_addclose(&actions, output[1]);
+    posix_spawn_file_actions_addclose(&actions, errors[0]);
+    posix_spawn_file_actions_addclose(&actions, errors[1]);
+    posix_spawnattr_init(&attr);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+    posix_spawnattr_setpgroup(&attr, 0);
+    pid = 0;
+    spawned = posix_spawnp(
+            &pid,
+            path,
+            &actions,
+            &attr,
+            argv,
+            environ);
+    posix_spawn_file_actions_destroy(&actions);
+    posix_spawnattr_destroy(&attr);
+    close(input[0]);
+    close(output[1]);
+    close(errors[1]);
+    free((void *)arg0);
+    free((void *)arg1);
+    free((void *)arg2);
+    free((void *)arg3);
+    free((void *)arg4);
+    free((void *)arg5);
+    if (spawned != 0) {
+        close(input[1]);
+        close(output[0]);
+        close(errors[0]);
+        fail("DBG3002", "could not start GDB");
+    }
+    toGdb = input[1];
+    fromGdb = output[0];
+    fromErr = errors[0];
+    gdbPid = pid;
+    start = now_ms();
+    while (sawPrompt == 0) {
+        if (now_ms() - start > 3000)
+            fail("DBG3002", "GDB did not send a prompt");
+        pump(200);
+    }
+    transact("-gdb-set pagination off", PURPOSE_SETUP);
+    transact("-gdb-set mi-async on", PURPOSE_SETUP);
+    transact("-gdb-set confirm off", PURPOSE_SETUP);
+    transact("-gdb-set host-charset UTF-8", PURPOSE_SETUP);
+    transact("-gdb-set may-call-functions off", PURPOSE_SETUP);
+    transact("-gdb-set print elements 8", PURPOSE_SETUP);
+    transact("-gdb-set print max-depth 2", PURPOSE_SETUP);
+}
+
+void DebugSession::close_gdb(void) {
+    struct timespec pause;
+    int status;
+    int got;
+    int spins;
+
+    if (toGdb >= 0) {
+        write(toGdb, (const void *)"-gdb-exit\n", 10);
+        close(toGdb);
+        toGdb = -1;
+    }
+    if (fromGdb >= 0) {
+        close(fromGdb);
+        fromGdb = -1;
+    }
+    if (fromErr >= 0) {
+        close(fromErr);
+        fromErr = -1;
+    }
+    if (gdbPid > 0) {
+        spins = 0;
+        got = 0;
+        status = 0;
+        pause.tv_sec = 0;
+        pause.tv_nsec = 100000000;
+        while (spins < 10) {
+            got = waitpid(gdbPid, &status, WNOHANG);
+            if (got != 0)
+                break;
+            nanosleep(&pause, nullptr);
+            spins = spins + 1;
+        }
+        if (got == 0) {
+            kill(gdbPid, SIGKILL);
+            kill(-gdbPid, SIGKILL);
+            if (inferiorPid > 0)
+                kill(inferiorPid, SIGKILL);
+            waitpid(gdbPid, &status, 0);
+        }
+        gdbPid = 0;
+    }
+    if (ownedExe->size() > 0)
+        unlink(ownedExe->c_str());
+    if (ownedDir->size() > 0)
+        rmdir(ownedDir->c_str());
+    string_set(ownedExe, "");
+    string_set(ownedDir, "");
+    inferiorPid = 0;
+}
+
+void DebugSession::note_temp(const char *dir, const char *exe) {
+    if (dir != nullptr)
+        string_set(ownedDir, dir);
+    if (exe != nullptr)
+        string_set(ownedExe, exe);
+}
+
+void DebugSession::load_program(const char *path) {
+    String *command;
+    String *quoted;
+
+    if (path == nullptr || path[0] == 0)
+        fail("DBG1001", "missing executable");
+    command = new String();
+    quoted = parser->quote(path);
+    command->append("-file-exec-and-symbols ");
+    command->append(quoted->c_str());
+    transact(command->c_str(), PURPOSE_LOAD);
+    string_set(executable, path);
+    state = DEBUG_LOADED;
+    havePrev = 0;
+    send_runtime();
+    update_status();
+}
+
+void DebugSession::send_runtime(void) {
+    String *command;
+    String *quoted;
+    long index;
+
+    if (state == DEBUG_EMPTY)
+        return;
+    if (directory->size() > 0) {
+        command = new String();
+        quoted = parser->quote(directory->c_str());
+        command->append("-environment-cd ");
+        command->append(quoted->c_str());
+        transact(command->c_str(), PURPOSE_OTHER);
+    }
+    index = 0;
+    while (index < environment->pairs->size()) {
+        command = new String();
+        command->append("-gdb-set environment ");
+        command->append(
+                environment->pairs->at(index)->name->c_str());
+        command->append(" ");
+        quoted = parser->quote(
+                environment->pairs->at(index)->value->c_str());
+        command->append(quoted->c_str());
+        transact(command->c_str(), PURPOSE_OTHER);
+        index = index + 1;
+    }
+    command = new String();
+    command->append("-exec-arguments");
+    index = 0;
+    while (index < arguments->values->size()) {
+        command->append(" ");
+        quoted = parser->quote(
+                arguments->values->at(index)->c_str());
+        command->append(quoted->c_str());
+        index = index + 1;
+    }
+    transact(command->c_str(), PURPOSE_OTHER);
+}
+
+void DebugSession::set_arguments(const char *text) {
+    if (arguments->parse(text) == 0)
+        fail("DBG1000", arguments->error->c_str());
+    if (state != DEBUG_EMPTY)
+        send_runtime();
+}
+
+void DebugSession::set_directory(const char *path) {
+    struct stat info;
+
+    if (path == nullptr)
+        path = "";
+    if (path[0] != 0) {
+        if (stat(path, &info) != 0 || S_ISDIR(info.st_mode) == 0)
+            fail("DBG1000", "working directory does not exist");
+    }
+    string_set(directory, path);
+    if (state != DEBUG_EMPTY && path[0] != 0)
+        send_runtime();
+}
+
+void DebugSession::set_environment(const char *text) {
+    if (environment->parse(text) == 0)
+        fail("DBG1000", environment->error->c_str());
+    if (state != DEBUG_EMPTY)
+        send_runtime();
+}
+
+void DebugSession::insert_breakpoint(const char *file, int line) {
+    String *command;
+    String *where;
+    String *quoted;
+
+    if (state == DEBUG_EMPTY)
+        fail("DBG1000", "no target is loaded");
+    if (file == nullptr || file[0] == 0 || line <= 0)
+        fail("DBG1000", "breakpoint needs a file and line");
+    where = new String();
+    where->append(file);
+    where->append(":");
+    where->append(format("{}", line));
+    quoted = parser->quote(where->c_str());
+    command = new String();
+    command->append("-break-insert ");
+    command->append(quoted->c_str());
+    transact(command->c_str(), PURPOSE_BREAKS);
+    string_set(
+            lastNumber,
+            lastValue->field("bkpt")->field("number")->text());
+    refresh_breaks();
+}
+
+void DebugSession::delete_breakpoint(const char *number) {
+    String *command;
+
+    command = new String();
+    command->append("-break-delete ");
+    command->append(number);
+    transact(command->c_str(), PURPOSE_BREAKS);
+    refresh_breaks();
+}
+
+void DebugSession::enable_breakpoint(
+        const char *number,
+        int enabled) {
+    String *command;
+
+    command = new String();
+    if (enabled)
+        command->append("-break-enable ");
+    else
+        command->append("-break-disable ");
+    command->append(number);
+    transact(command->c_str(), PURPOSE_BREAKS);
+    refresh_breaks();
+}
+
+void DebugSession::set_condition(
+        const char *number,
+        const char *expr) {
+    String *command;
+    String *quoted;
+
+    command = new String();
+    command->append("-break-condition ");
+    command->append(number);
+    if (expr != nullptr && expr[0] != 0) {
+        command->append(" ");
+        quoted = parser->quote(expr);
+        command->append(quoted->c_str());
+    }
+    transact(command->c_str(), PURPOSE_BREAKS);
+    refresh_breaks();
+}
+
+void DebugSession::set_ignore(const char *number, int count) {
+    String *command;
+
+    if (count < 0)
+        count = 0;
+    command = new String();
+    command->append("-break-after ");
+    command->append(number);
+    command->append(" ");
+    command->append(format("{}", count));
+    transact(command->c_str(), PURPOSE_BREAKS);
+    refresh_breaks();
+}
+
+void DebugSession::apply_frames(void) {
+    MiValue *stack;
+    MiValue *frame;
+    DebugFrame *item;
+    long index;
+
+    frames = new FrameVec();
+    stack = lastValue->field("stack");
+    index = 0;
+    while (index < stack->count() && index < 31) {
+        frame = stack->at(index);
+        item = new DebugFrame();
+        item->level = (int)strtol(
+                frame->field("level")->text(),
+                nullptr,
+                10);
+        item->line = (int)strtol(
+                frame->field("line")->text(),
+                nullptr,
+                10);
+        string_set(item->func, frame->field("func")->text());
+        string_set(item->file, frame->field("file")->text());
+        string_set(
+                item->fullname,
+                frame->field("fullname")->text());
+        string_set(item->addr, frame->field("addr")->text());
+        frames->add(item);
+        index = index + 1;
+    }
+}
+
+void DebugSession::apply_locals(void) {
+    MiValue *vars;
+    MiValue *item;
+    DebugVar *local;
+    long index;
+
+    locals = new VarVec();
+    vars = lastValue->field("variables");
+    index = 0;
+    while (index < vars->count() && index < 64) {
+        item = vars->at(index);
+        local = new DebugVar();
+        string_set(local->name, item->field("name")->text());
+        string_set(local->value, item->field("value")->text());
+        if (same_text(item->field("arg")->text(), "1"))
+            local->argument = 1;
+        locals->add(local);
+        index = index + 1;
+    }
+    if (vars->count() > 64)
+        append_console("locals truncated to 64\n");
+}
+
+void DebugSession::apply_breaks(void) {
+    MiValue *body;
+    MiValue *item;
+    DebugBreak *point;
+    long index;
+    const char *addr;
+
+    breaks = new BreakVec();
+    body = lastValue->field("BreakpointTable")->field("body");
+    index = 0;
+    while (index < body->count() && index < 256) {
+        item = body->at(index);
+        point = new DebugBreak();
+        string_set(point->number, item->field("number")->text());
+        string_set(point->file, item->field("file")->text());
+        string_set(
+                point->fullname,
+                item->field("fullname")->text());
+        string_set(point->func, item->field("func")->text());
+        string_set(point->addr, item->field("addr")->text());
+        string_set(point->condition, item->field("cond")->text());
+        point->line = (int)strtol(
+                item->field("line")->text(),
+                nullptr,
+                10);
+        point->hits = (int)strtol(
+                item->field("times")->text(),
+                nullptr,
+                10);
+        point->enabled = same_text(
+                item->field("enabled")->text(),
+                "y");
+        addr = point->addr->c_str();
+        if (item->field("pending")->text()[0] != 0
+                || same_text(addr, "<PENDING>"))
+            point->pending = 1;
+        breaks->add(point);
+        index = index + 1;
+    }
+}
+
+void DebugSession::apply_threads(void) {
+    MiValue *list;
+    MiValue *item;
+    DebugThread *thread;
+    long index;
+
+    threads = new ThreadVec();
+    list = lastValue->field("threads");
+    index = 0;
+    while (index < list->count() && index < 64) {
+        item = list->at(index);
+        thread = new DebugThread();
+        string_set(thread->id, item->field("id")->text());
+        string_set(thread->name, item->field("name")->text());
+        string_set(
+                thread->target,
+                item->field("target-id")->text());
+        threads->add(thread);
+        index = index + 1;
+    }
+}
+
+void DebugSession::refresh_stack(void) {
+    transact("-stack-list-frames 0 30", PURPOSE_FRAMES);
+    apply_frames();
+}
+
+void DebugSession::refresh_locals(void) {
+    transact(
+            "-stack-list-variables --all-values",
+            PURPOSE_LOCALS);
+    apply_locals();
+}
+
+void DebugSession::refresh_breaks(void) {
+    transact("-break-list", PURPOSE_BREAKS);
+    apply_breaks();
+}
+
+void DebugSession::refresh_threads(void) {
+    transact("-thread-info", PURPOSE_THREADS);
+    apply_threads();
+}
+
+int DebugSession::rejected(const char *expr) {
+    int index;
+
+    if (expr == nullptr || expr[0] == 0)
+        return 1;
+    index = 0;
+    while (expr[index] != 0) {
+        if (expr[index] == '(' || expr[index] == ')'
+                || expr[index] == '=')
+            return 1;
+        if (expr[index] == '+' && expr[index + 1] == '+')
+            return 1;
+        if (expr[index] == '-' && expr[index + 1] == '-')
+            return 1;
+        index = index + 1;
+    }
+    return 0;
+}
+
+void DebugSession::refresh_watches(void) {
+    DebugWatch *watch;
+    String *command;
+    String *quoted;
+    long index;
+
+    index = 0;
+    while (index < watches->size()) {
+        watch = watches->at(index);
+        if (rejected(watch->expression->c_str())) {
+            string_set(watch->value, "");
+            string_set(
+                    watch->error,
+                    "calls, assignment, and increment are rejected");
+        } else {
+            command = new String();
+            quoted = parser->quote(watch->expression->c_str());
+            command->append("-data-evaluate-expression ");
+            command->append(quoted->c_str());
+            if (try_transact(command->c_str(), PURPOSE_WATCH)) {
+                string_set(
+                        watch->value,
+                        lastValue->field("value")->text());
+                string_set(watch->error, "");
+            } else {
+                string_set(watch->value, "");
+                string_set(watch->error, lastMsg->c_str());
+            }
+        }
+        index = index + 1;
+    }
+}
+
+void DebugSession::add_watch(const char *expr) {
+    DebugWatch *watch;
+
+    if (watches->size() >= 64)
+        fail("DBG1000", "at most 64 watches");
+    watch = new DebugWatch();
+    if (expr == nullptr)
+        expr = "";
+    string_set(watch->expression, expr);
+    watches->add(watch);
+    if (state == DEBUG_STOPPED)
+        refresh_watches();
+}
+
+void DebugSession::remove_watch(long index) {
+    if (index < 0 || index >= watches->size())
+        fail("DBG1000", "no such watch");
+    watches->remove(index);
+}
+
+void DebugSession::select_frame(int level) {
+    String *command;
+
+    if (state != DEBUG_STOPPED)
+        fail("DBG1000", "the program is not stopped");
+    command = new String();
+    command->append("-stack-select-frame ");
+    command->append(format("{}", level));
+    transact(command->c_str(), PURPOSE_OTHER);
+    selectedFrame = level;
+    refresh_locals();
+    refresh_watches();
+    if (level >= 0 && level < (int)frames->size()) {
+        string_set(stopFile, frames->at(level)->file->c_str());
+        string_set(
+                stopFull,
+                frames->at(level)->fullname->c_str());
+        string_set(stopFunc, frames->at(level)->func->c_str());
+        stopLine = frames->at(level)->line;
+    }
+}
+
+void DebugSession::select_thread(const char *id) {
+    String *command;
+
+    if (state != DEBUG_STOPPED)
+        fail("DBG1000", "the program is not stopped");
+    command = new String();
+    command->append("-thread-select ");
+    command->append(id);
+    transact(command->c_str(), PURPOSE_OTHER);
+    selectedFrame = 0;
+    refresh_stack();
+    refresh_locals();
+    refresh_watches();
+}
+
+void DebugSession::prepare_frame(void) {
+    if (selectedFrame == 0)
+        return;
+    transact("-stack-select-frame 0", PURPOSE_OTHER);
+    selectedFrame = 0;
+}
+
+void DebugSession::snapshot_hits(void) {
+    HitSnap *snap;
+    long index;
+
+    snaps = new SnapVec();
+    if (state == DEBUG_EMPTY)
+        return;
+    refresh_breaks();
+    index = 0;
+    while (index < breaks->size()) {
+        snap = new HitSnap();
+        string_set(snap->number, breaks->at(index)->number->c_str());
+        snap->hits = breaks->at(index)->hits;
+        snap->enabled = breaks->at(index)->enabled;
+        snaps->add(snap);
+        index = index + 1;
+    }
+}
+
+void DebugSession::report_unreached(void) {
+    HitSnap *snap;
+    DebugBreak *point;
+    long index;
+    long cursor;
+    int found;
+
+    missedCount = 0;
+    if (try_transact("-break-list", PURPOSE_BREAKS) == 0)
+        return;
+    apply_breaks();
+    index = 0;
+    while (index < snaps->size()) {
+        snap = snaps->at(index);
+        if (snap->enabled) {
+            found = 0;
+            cursor = 0;
+            point = nullptr;
+            while (cursor < breaks->size()) {
+                if (same_text(
+                        breaks->at(cursor)->number->c_str(),
+                        snap->number->c_str())) {
+                    point = breaks->at(cursor);
+                    found = 1;
+                }
+                cursor = cursor + 1;
+            }
+            if (found && point->hits == snap->hits) {
+                missedCount = missedCount + 1;
+                append_console(
+                        "Not reached during this run ");
+                append_console(snap->number->c_str());
+                append_console(" ");
+                append_console(point->file->c_str());
+                append_console(":");
+                append_console(format("{}", point->line));
+                append_console(
+                        " (that code did not execute)\n");
+            }
+        }
+        index = index + 1;
+    }
+}
+
+int DebugSession::same_place(void) {
+    if (havePrev == 0)
+        return 0;
+    if (prevLine != stopLine)
+        return 0;
+    if (same_text(prevFile->c_str(), stopFile->c_str()) == 0)
+        return 0;
+    if (same_text(prevFunc->c_str(), stopFunc->c_str()) == 0)
+        return 0;
+    return 1;
+}
+
+void DebugSession::update_status(void) {
+    int atStart;
+
+    string_set(status, "");
+    if (state == DEBUG_EMPTY) {
+        status->append("No target");
+    } else if (state == DEBUG_LOADED) {
+        status->append("Loaded ");
+        status->append(executable->c_str());
+    } else if (state == DEBUG_RUNNING) {
+        status->append("Running");
+    } else if (state == DEBUG_EXITED) {
+        status->append("Exited");
+        if (haveExit) {
+            status->append(" ");
+            status->append(format("{}", exitCode));
+        }
+        if (missedCount > 0) {
+            status->append(". Not reached: ");
+            status->append(format("{}", missedCount));
+        }
+    } else {
+        atStart = 0;
+        if (startBreak->size() > 0
+                && same_text(
+                    stopBkpt->c_str(),
+                    startBreak->c_str()))
+            atStart = 1;
+        if (atStart) {
+            status->append("Stopped at start");
+        } else {
+            status->append("Stopped at ");
+            status->append(stopFile->c_str());
+            status->append(":");
+            status->append(format("{}", stopLine));
+            status->append(" in ");
+            status->append(stopFunc->c_str());
+            status->append(" (");
+            status->append(stopReason->c_str());
+            status->append(")");
+        }
+        if (same_place()) {
+            status->append(" same source line");
+            if (prevAddr->size() > 0) {
+                status->append(" previous ");
+                status->append(prevAddr->c_str());
+            }
+        }
+        string_set(prevFile, stopFile->c_str());
+        string_set(prevFunc, stopFunc->c_str());
+        string_set(prevAddr, stopAddr->c_str());
+        prevLine = stopLine;
+        havePrev = 1;
+    }
+}
+
+void DebugSession::begin_run(void) {
+    String *command;
+
+    if (state == DEBUG_EMPTY)
+        fail("DBG1000", "no target is loaded");
+    if (state == DEBUG_RUNNING)
+        fail("DBG1000", "the program is already running");
+    snapshot_hits();
+    havePrev = 0;
+    string_set(startBreak, "");
+    missedCount = 0;
+    send_runtime();
+    if (breakAtStart) {
+        if (try_transact("-break-insert -t main", PURPOSE_BREAKS)) {
+            string_set(
+                    startBreak,
+                    lastValue->field("bkpt")->field(
+                        "number")->text());
+        } else {
+            append_console("Break at start unavailable\n");
+        }
+    }
+    command = new String();
+    command->append("-exec-run");
+    runStops = stopSerial;
+    runExits = exitSerial;
+    transact(command->c_str(), PURPOSE_RUN);
+}
+
+void DebugSession::wait_until_stop(void) {
+    wait_stop(15000, runStops, runExits);
+    if (state == DEBUG_EXITED)
+        report_unreached();
+    else if (state == DEBUG_STOPPED) {
+        refresh_stack();
+        refresh_locals();
+        refresh_threads();
+        refresh_breaks();
+        refresh_watches();
+        selectedFrame = 0;
+    }
+    update_status();
+}
+
+void DebugSession::run_program(void) {
+    begin_run();
+    wait_until_stop();
+}
+
+void DebugSession::continue_program(void) {
+    if (state != DEBUG_STOPPED)
+        fail("DBG1000", "the program is not stopped");
+    prepare_frame();
+    runStops = stopSerial;
+    runExits = exitSerial;
+    transact("-exec-continue", PURPOSE_STEP);
+    wait_until_stop();
+}
+
+void DebugSession::step_over(void) {
+    String *file;
+    String *func;
+    int line;
+    int hops;
+
+    if (state != DEBUG_STOPPED)
+        fail("DBG1000", "the program is not stopped");
+    prepare_frame();
+    file = string_from(stopFile->c_str());
+    func = string_from(stopFunc->c_str());
+    line = stopLine;
+    hops = 0;
+    while (hops < 8) {
+        runStops = stopSerial;
+        runExits = exitSerial;
+        transact("-exec-next", PURPOSE_STEP);
+        wait_stop(15000, runStops, runExits);
+        hops = hops + 1;
+        if (state != DEBUG_STOPPED)
+            break;
+        if (same_text(stopReason->c_str(), "end-stepping-range")
+                == 0)
+            break;
+        if (stopLine != line)
+            break;
+        if (same_text(stopFile->c_str(), file->c_str()) == 0)
+            break;
+        if (same_text(stopFunc->c_str(), func->c_str()) == 0)
+            break;
+    }
+    if (state == DEBUG_EXITED)
+        report_unreached();
+    else if (state == DEBUG_STOPPED) {
+        refresh_stack();
+        refresh_locals();
+        refresh_threads();
+        refresh_breaks();
+        refresh_watches();
+        selectedFrame = 0;
+    }
+    update_status();
+}
+
+void DebugSession::step_into(void) {
+    int hops;
+    int readable;
+
+    if (state != DEBUG_STOPPED)
+        fail("DBG1000", "the program is not stopped");
+    prepare_frame();
+    runStops = stopSerial;
+    runExits = exitSerial;
+    transact("-exec-step", PURPOSE_STEP);
+    wait_stop(15000, runStops, runExits);
+    hops = 0;
+    while (hops < 8 && state == DEBUG_STOPPED) {
+        readable = 0;
+        if (stopFull->size() > 0
+                && access(stopFull->c_str(), R_OK) == 0)
+            readable = 1;
+        if (readable)
+            break;
+        if (same_text(stopReason->c_str(), "breakpoint-hit"))
+            break;
+        runStops = stopSerial;
+        runExits = exitSerial;
+        if (try_transact("-exec-finish", PURPOSE_STEP) == 0)
+            break;
+        wait_stop(15000, runStops, runExits);
+        hops = hops + 1;
+    }
+    if (hops > 0) {
+        append_console("skipped ");
+        append_console(format("{}", hops));
+        append_console(" sourceless frames\n");
+    }
+    if (state == DEBUG_EXITED)
+        report_unreached();
+    else if (state == DEBUG_STOPPED) {
+        refresh_stack();
+        refresh_locals();
+        refresh_threads();
+        refresh_breaks();
+        refresh_watches();
+        selectedFrame = 0;
+    }
+    update_status();
+}
+
+void DebugSession::step_out(void) {
+    if (state != DEBUG_STOPPED)
+        fail("DBG1000", "the program is not stopped");
+    prepare_frame();
+    runStops = stopSerial;
+    runExits = exitSerial;
+    transact("-exec-finish", PURPOSE_STEP);
+    wait_until_stop();
+}
+
+void DebugSession::interrupt_program(void) {
+    if (state != DEBUG_RUNNING)
+        fail("DBG1000", "the program is not running");
+    runStops = stopSerial;
+    runExits = exitSerial;
+    transact("-exec-interrupt", PURPOSE_STEP);
+    wait_until_stop();
+}
+
+void DebugSession::restart_program(void) {
+    if (state == DEBUG_RUNNING) {
+        runStops = stopSerial;
+        runExits = exitSerial;
+        transact("-exec-interrupt", PURPOSE_STEP);
+        wait_stop(8000, runStops, runExits);
+    }
+    begin_run();
+    wait_until_stop();
+}
+
+#endif

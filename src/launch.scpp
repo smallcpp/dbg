@@ -1,0 +1,122 @@
+#ifndef DBG_LAUNCH
+#define DBG_LAUNCH
+
+/* Command line for dbg. --help prints usage. One target
+ * is allowed before --. Arguments after -- belong to the
+ * inferior. A missing target file is reported before GTK. */
+
+#include <stat>
+#include <stdio>
+#include "args.scpp"
+
+enum {
+    LAUNCH_OPEN,
+    LAUNCH_HELP,
+    LAUNCH_USAGE,
+    LAUNCH_MISSING
+};
+
+class LaunchRequest {
+public:
+    LaunchRequest();
+    void parse(int argc, char **argv);
+    void usage(const char *text);
+    void missing(const char *path);
+    int is_file(const char *path);
+    int action;
+    String *target;
+    String *message;
+    ArgumentList *arguments;
+};
+
+LaunchRequest::LaunchRequest() {
+    action = LAUNCH_OPEN;
+    target = new String();
+    message = new String();
+    arguments = new ArgumentList();
+}
+
+void LaunchRequest::usage(const char *text) {
+    action = LAUNCH_USAGE;
+    string_set(message, "dbg: error[DBG0001]: ");
+    message->append(text);
+    message->append("\n");
+}
+
+void LaunchRequest::missing(const char *path) {
+    action = LAUNCH_MISSING;
+    string_set(
+            message,
+            "dbg: error[DBG1001]: target is not a local file: ");
+    message->append(path);
+    message->append(
+            "; choose an existing source or executable file\n");
+}
+
+int LaunchRequest::is_file(const char *path) {
+    struct stat info;
+
+    if (path == nullptr || path[0] == 0)
+        return 0;
+    if (stat(path, &info) != 0)
+        return 0;
+    if (S_ISREG(info.st_mode) == 0)
+        return 0;
+    return 1;
+}
+
+void LaunchRequest::parse(int argc, char **argv) {
+    int index;
+    int options;
+    int seen;
+    const char *arg;
+
+    action = LAUNCH_OPEN;
+    string_set(target, "");
+    string_set(message, "");
+    arguments = new ArgumentList();
+    options = 1;
+    seen = 0;
+    index = 1;
+    while (index < argc) {
+        arg = argv[index];
+        index = index + 1;
+        if (options != 0 && same_text(arg, "--")) {
+            options = 0;
+        } else if (options != 0 && same_text(arg, "--help")) {
+            action = LAUNCH_HELP;
+            string_set(message, "Usage: dbg [target] [-- arguments...]\n");
+            message->append("\n");
+            message->append(
+                    "Local GDB/MI debugger for scpp. A .scpp ");
+            message->append(
+                    "target is compiled with scpp -g. Other\n");
+            message->append(
+                    "files are executables. No LLDB, remote, ");
+            message->append("or attach.\n\n");
+            message->append("  --help    show this help\n");
+            return;
+        } else if (options != 0 && arg[0] == '-') {
+            usage("unknown option: ");
+            message->truncate(message->size() - 1, message->size());
+            message->append(arg);
+            message->append("\n");
+            return;
+        } else if (seen == 0) {
+            string_set(target, arg);
+            seen = 1;
+        } else if (options != 0) {
+            usage("unexpected positional argument: ");
+            message->truncate(message->size() - 1, message->size());
+            message->append(arg);
+            message->append("\n");
+            return;
+        } else {
+            arguments->values->add(string_from(arg));
+        }
+    }
+    if (target->size() > 0 && is_file(target->c_str()) == 0)
+        missing(target->c_str());
+}
+
+#endif

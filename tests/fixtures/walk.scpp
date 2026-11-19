@@ -1,0 +1,21 @@
+int unused(int n) {
+    int extra;
+
+    extra = n + 1;
+    return extra;
+}
+
+int add(int left, int right) {
+    int sum;
+
+    sum = left + right;
+    return sum;
+}
+
+int main(int argc, char **argv) {
+    int value;
+
+    value = add(4, 5);
+    print("value {}\n", value);
+    return 0;
+}

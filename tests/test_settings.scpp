@@ -1,0 +1,116 @@
+#include "../src/settings.scpp"
+#include <stdio>
+#include <stdlib>
+
+int main(void) {
+    ProjectSettings *settings;
+    ProjectSettings *loaded;
+    SavedTarget *target;
+    char pattern[64];
+    char path[80];
+    int index;
+
+    settings = new ProjectSettings();
+    settings->width = 800;
+    settings->breakAtStart = 0;
+    settings->showThreads = 1;
+    target = settings->ensure("/tmp/walk.scpp");
+    target->hasBreak = 1;
+    target->breakAtStart = 0;
+    string_set(target->arguments, "one 'two words' ''");
+    string_set(target->cwd, "/tmp");
+    string_set(target->envText, "FOO=bar\nBAZ=1");
+    target->points->add(new SavedPoint());
+    string_set(target->points->at(0)->file, "/tmp/walk.scpp");
+    target->points->at(0)->line = 12;
+    target->points->at(0)->enabled = 0;
+    string_set(target->points->at(0)->condition, "left==4");
+    target->points->at(0)->hitCount = 2;
+    target->watches->add(new SavedWatch());
+    string_set(target->watches->at(0)->expression, "value");
+    index = 0;
+    while (index < 18) {
+        pattern[index] = "/tmp/dbgsetXXXXXX"[index];
+        index = index + 1;
+    }
+    pattern[18] = 0;
+    if (mkdtemp(pattern) == nullptr)
+        return 1;
+    index = 0;
+    while (pattern[index] != 0) {
+        path[index] = pattern[index];
+        index = index + 1;
+    }
+    path[index] = '/';
+    index = index + 1;
+    path[index] = 's';
+    index = index + 1;
+    path[index] = 0;
+    if (require_test(settings->save(path), "save") == 0)
+        return 1;
+    loaded = new ProjectSettings();
+    if (require_test(loaded->load(path), "load") == 0)
+        return 1;
+    if (require_test(loaded->width == 800, "width") == 0)
+        return 1;
+    if (require_test(loaded->breakAtStart == 0, "break") == 0)
+        return 1;
+    if (require_test(loaded->showThreads == 1, "threads") == 0)
+        return 1;
+    target = loaded->find("/tmp/walk.scpp");
+    if (require_test(target != nullptr, "target") == 0)
+        return 1;
+    if (require_test(target->breakAtStart == 0, "target break") == 0)
+        return 1;
+    if (require_test(
+            same_text(
+                target->arguments->c_str(),
+                "one 'two words' ''"),
+            "arguments") == 0)
+        return 1;
+    if (require_test(
+            same_text(target->envText->c_str(), "FOO=bar\nBAZ=1"),
+            "env") == 0)
+        return 1;
+    if (require_test(target->points->size() == 1, "points") == 0)
+        return 1;
+    if (require_test(target->points->at(0)->line == 12, "line") == 0)
+        return 1;
+    if (require_test(
+            target->points->at(0)->enabled == 0,
+            "enabled") == 0)
+        return 1;
+    if (require_test(
+            same_text(
+                target->points->at(0)->condition->c_str(),
+                "left==4"),
+            "condition") == 0)
+        return 1;
+    if (require_test(
+            target->points->at(0)->hitCount == 2,
+            "hits") == 0)
+        return 1;
+    if (require_test(
+            same_text(
+                target->watches->at(0)->expression->c_str(),
+                "value"),
+            "watch") == 0)
+        return 1;
+    settings->width = 10;
+    settings->height = 99999;
+    settings->pane = 5;
+    if (require_test(settings->save(path), "save clamp") == 0)
+        return 1;
+    if (require_test(loaded->load(path), "reload") == 0)
+        return 1;
+    if (require_test(loaded->width == 640, "clamped width") == 0)
+        return 1;
+    if (require_test(loaded->height == 2160, "clamped height") == 0)
+        return 1;
+    if (require_test(loaded->pane == 100, "clamped pane") == 0)
+        return 1;
+    unlink(path);
+    rmdir(pattern);
+    print("settings 1\n");
+    return 0;
+}

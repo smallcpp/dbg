@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(template LANGUAGES NONE)
+project(dbg LANGUAGES NONE)
 
 # Binaries land next to the checkout, as they do for the compiler.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
@@ -25,25 +25,83 @@ if(NOT SCPP)
         "Install smallcpp and run scripts/setup again.")
 endif()
 
-# Header and library search is scpp's. When ~/.config/smallcpp/config.ini
-# exists, scpp reads include, library, and runtime from it. This program
-# includes no header. A later #include uses that file.
-set(HELLO_SOURCE "${CMAKE_SOURCE_DIR}/src/hello.scpp")
-set(HELLO_PROGRAM "${CMAKE_SOURCE_DIR}/bin/hello")
-
 set(SCPP_FLAGS "")
-if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+if(CMAKE_BUILD_TYPE STREQUAL "Debug"
+        OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
     list(APPEND SCPP_FLAGS "-g")
 endif()
 
+set(DBG_GTK_LIBS
+    smallcpp_gtk
+    gtk-4
+    gio-2.0
+    gobject-2.0
+    glib-2.0
+    pango-1.0
+    pangocairo-1.0
+    cairo)
+set(DBG_LINK "")
+if(IS_ABSOLUTE "$ENV{HOME}"
+        AND EXISTS "$ENV{HOME}/opt/smallcpp/lib")
+    list(APPEND DBG_LINK -L "$ENV{HOME}/opt/smallcpp/lib")
+endif()
+foreach(lib IN LISTS DBG_GTK_LIBS)
+    list(APPEND DBG_LINK -l "${lib}")
+endforeach()
+
+set(DBG_SOURCES
+    "${CMAKE_SOURCE_DIR}/src/dbg.scpp"
+    "${CMAKE_SOURCE_DIR}/src/ui.scpp"
+    "${CMAKE_SOURCE_DIR}/src/launch.scpp"
+    "${CMAKE_SOURCE_DIR}/src/session.scpp"
+    "${CMAKE_SOURCE_DIR}/src/compile.scpp"
+    "${CMAKE_SOURCE_DIR}/src/source.scpp"
+    "${CMAKE_SOURCE_DIR}/src/settings.scpp"
+    "${CMAKE_SOURCE_DIR}/src/args.scpp"
+    "${CMAKE_SOURCE_DIR}/src/mi.scpp"
+    "${CMAKE_SOURCE_DIR}/src/util.scpp")
+
+set(DBG_PROGRAM "${CMAKE_SOURCE_DIR}/bin/dbg")
+
 add_custom_command(
-    OUTPUT "${HELLO_PROGRAM}"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_SOURCE_DIR}/bin"
-    COMMAND "${SCPP}" ${SCPP_FLAGS} -o "${HELLO_PROGRAM}" "${HELLO_SOURCE}"
+    OUTPUT "${DBG_PROGRAM}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${CMAKE_SOURCE_DIR}/bin"
+    COMMAND "${SCPP}" ${SCPP_FLAGS} ${DBG_LINK}
+        -o "${DBG_PROGRAM}"
+        "${CMAKE_SOURCE_DIR}/src/dbg.scpp"
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    DEPENDS "${HELLO_SOURCE}" "${SCPP}"
-    COMMENT "Compiling src/hello.scpp"
+    DEPENDS ${DBG_SOURCES} "${SCPP}"
+    COMMENT "Compiling src/dbg.scpp"
     VERBATIM)
-add_custom_target(hello ALL DEPENDS "${HELLO_PROGRAM}")
+add_custom_target(dbg ALL DEPENDS "${DBG_PROGRAM}")
+
+function(add_scpp_test name source)
+    set(program "${CMAKE_SOURCE_DIR}/bin/${name}")
+    add_custom_command(
+        OUTPUT "${program}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${CMAKE_SOURCE_DIR}/bin"
+        COMMAND "${SCPP}" ${SCPP_FLAGS} ${ARGN}
+            -o "${program}"
+            "${CMAKE_SOURCE_DIR}/tests/${source}"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+        DEPENDS
+            "${CMAKE_SOURCE_DIR}/tests/${source}"
+            ${DBG_SOURCES}
+            "${SCPP}"
+        COMMENT "Compiling tests/${source}"
+        VERBATIM)
+    add_custom_target(${name} ALL DEPENDS "${program}")
+endfunction()
+
+add_scpp_test(test_mi test_mi.scpp)
+add_scpp_test(test_args test_args.scpp)
+add_scpp_test(test_settings test_settings.scpp)
+add_scpp_test(test_source test_source.scpp)
+add_scpp_test(test_open test_open.scpp)
+add_scpp_test(test_session test_session.scpp)
+add_scpp_test(test_launch test_launch.scpp)
+add_scpp_test(test_ui test_ui.scpp ${DBG_LINK})
 
 add_subdirectory(tests)

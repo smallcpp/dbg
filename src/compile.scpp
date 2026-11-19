@@ -1,0 +1,143 @@
+#ifndef DBG_COMPILE
+#define DBG_COMPILE
+
+/* Compile one scpp file with `scpp -g`. The compiler is a
+ * program name or path. Output and diagnostics are captured
+ * from the compiler pipes. A non-zero status is a failure. */
+
+#include <errno>
+#include <spawn>
+#include <select>
+#include <unistd>
+#include "util.scpp"
+
+class ProgramCompiler {
+public:
+    ProgramCompiler();
+    int compile(
+            const char *compiler,
+            const char *source,
+            const char *output);
+    String *log;
+    int status;
+    void read_pipe(int fd, String *into);
+    int wait_child(int pid, int fd);
+};
+
+ProgramCompiler::ProgramCompiler() {
+    log = new String();
+    status = 0;
+}
+
+void ProgramCompiler::read_pipe(int fd, String *into) {
+    char buf[1024];
+    long count;
+
+    count = read(fd, (void *)buf, 1024);
+    while (count > 0) {
+        string_add_bytes(into, buf, count);
+        count = read(fd, (void *)buf, 1024);
+    }
+}
+
+int ProgramCompiler::wait_child(int pid, int fd) {
+    fd_set reads;
+    struct timeval limit;
+    int state;
+    int result;
+    long count;
+    char buf[1024];
+
+    state = 0;
+    result = -1;
+    while (result < 0) {
+        FD_ZERO(&reads);
+        if (fd >= 0)
+            FD_SET(fd, &reads);
+        limit.tv_sec = 0;
+        limit.tv_usec = 200000;
+        if (fd >= 0)
+            select(fd + 1, &reads, nullptr, nullptr, &limit);
+        if (fd >= 0 && FD_ISSET(fd, &reads) != 0) {
+            count = read(fd, (void *)buf, 1024);
+            if (count > 0)
+                string_add_bytes(log, buf, count);
+        }
+        result = waitpid(pid, &state, WNOHANG);
+        if (result < 0 && errno != EINTR)
+            return -1;
+        if (result == 0)
+            result = -1;
+    }
+    if (fd >= 0)
+        read_pipe(fd, log);
+    if (WIFEXITED(state) == 0)
+        return -1;
+    return WEXITSTATUS(state);
+}
+
+int ProgramCompiler::compile(
+        const char *compiler,
+        const char *source,
+        const char *output) {
+    int pipes[2];
+    int spawned;
+    pid_t pid;
+    posix_spawn_file_actions_t actions;
+    char *arg0;
+    char *arg1;
+    char *arg2;
+    char *arg3;
+    char *arg4;
+    char *argv[6];
+
+    string_set(log, "");
+    status = -1;
+    if (compiler == nullptr || compiler[0] == 0)
+        compiler = "scpp";
+    if (pipe(pipes) != 0)
+        return 0;
+    arg0 = text_copy(compiler);
+    arg1 = text_copy("-g");
+    arg2 = text_copy("-o");
+    arg3 = text_copy(output);
+    arg4 = text_copy(source);
+    argv[0] = arg0;
+    argv[1] = arg1;
+    argv[2] = arg2;
+    argv[3] = arg3;
+    argv[4] = arg4;
+    argv[5] = nullptr;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_adddup2(&actions, pipes[1], 1);
+    posix_spawn_file_actions_adddup2(&actions, pipes[1], 2);
+    posix_spawn_file_actions_addclose(&actions, pipes[0]);
+    posix_spawn_file_actions_addclose(&actions, pipes[1]);
+    pid = 0;
+    spawned = posix_spawnp(
+            &pid,
+            compiler,
+            &actions,
+            nullptr,
+            argv,
+            environ);
+    posix_spawn_file_actions_destroy(&actions);
+    close(pipes[1]);
+    free((void *)arg0);
+    free((void *)arg1);
+    free((void *)arg2);
+    free((void *)arg3);
+    free((void *)arg4);
+    if (spawned != 0) {
+        close(pipes[0]);
+        string_set(log, "could not start the compiler");
+        return 0;
+    }
+    status = wait_child(pid, pipes[0]);
+    close(pipes[0]);
+    if (status != 0)
+        return 0;
+    return 1;
+}
+
+#endif

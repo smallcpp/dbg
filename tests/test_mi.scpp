@@ -1,0 +1,129 @@
+#include "../src/mi.scpp"
+
+int main(void) {
+    MiParser *parser;
+    String *quoted;
+    String *sample;
+    MiValue *vars;
+    MiValue *stopped;
+    MiValue *frame;
+
+    parser = new MiParser();
+    quoted = parser->quote("a\"b\\c\n");
+    if (require_test(
+            same_text(quoted->c_str(), "\"a\\\"b\\\\c\\n\""),
+            "quote") == 0)
+        return 1;
+    sample = new String();
+    sample->append("7^done,bkpt={number=\"1\",line=\"12\",");
+    sample->append("enabled=\"y\",file=\"a.scpp\"}");
+    if (require_test(parser->parse(sample->c_str()),
+            "parse bkpt") == 0)
+        return 1;
+    if (require_test(
+            same_text(parser->token->c_str(), "7"),
+            "token") == 0)
+        return 1;
+    if (require_test(
+            same_text(parser->kind->c_str(), "^"),
+            "kind") == 0)
+        return 1;
+    if (require_test(
+            same_text(
+                parser->data->field("bkpt")->field(
+                    "line")->text(),
+                "12"),
+            "line") == 0)
+        return 1;
+    sample = new String();
+    sample->append("1^done,variables=[{name=\"argc\",");
+    sample->append("value=\"4\"},{name=\"value\",value=\"9\"}]");
+    if (require_test(parser->parse(sample->c_str()),
+            "parse vars") == 0)
+        return 1;
+    vars = parser->data->field("variables");
+    if (require_test(vars->count() == 2, "var count") == 0)
+        return 1;
+    if (require_test(
+            same_text(vars->at(0)->field("name")->text(), "argc"),
+            "argc name") == 0)
+        return 1;
+    if (require_test(
+            same_text(vars->at(1)->field("value")->text(), "9"),
+            "value") == 0)
+        return 1;
+    sample = new String();
+    sample->append("*stopped,reason=\"breakpoint-hit\",");
+    sample->append("frame={func=\"add\",line=\"12\",");
+    sample->append("file=\"fix.scpp\"}");
+    if (require_test(parser->parse(sample->c_str()),
+            "parse stop") == 0)
+        return 1;
+    stopped = parser->data;
+    frame = stopped->field("frame");
+    if (require_test(
+            same_text(stopped->field("reason")->text(),
+                "breakpoint-hit"),
+            "reason") == 0)
+        return 1;
+    if (require_test(
+            same_text(frame->field("func")->text(), "add"),
+            "func") == 0)
+        return 1;
+    if (require_test(
+            parser->parse("~\"hello\\n\""),
+            "console") == 0)
+        return 1;
+    if (require_test(
+            same_text(parser->data->text(), "hello\n"),
+            "console text") == 0)
+        return 1;
+    if (require_test(
+            parser->parse("@\"value 9\\n\""),
+            "target") == 0)
+        return 1;
+    if (require_test(
+            same_text(parser->kind->c_str(), "@"),
+            "target kind") == 0)
+        return 1;
+    if (require_test(
+            parser->parse("^error,msg=\"No compiled code\""),
+            "error") == 0)
+        return 1;
+    if (require_test(
+            same_text(parser->result->c_str(), "error"),
+            "error result") == 0)
+        return 1;
+    if (require_test(
+            same_text(
+                parser->data->field("msg")->text(),
+                "No compiled code"),
+            "error msg") == 0)
+        return 1;
+    if (require_test(
+            parser->parse("^done,text=\"a\\040b\""),
+            "octal") == 0)
+        return 1;
+    if (require_test(
+            same_text(parser->data->field("text")->text(), "a b"),
+            "octal text") == 0)
+        return 1;
+    if (require_test(parser->parse("^") == 0, "short") == 0)
+        return 1;
+    sample = new String();
+    sample->append("^done,bkpt={number=\"1\",line=\"3\"},");
+    sample->append("{number=\"1.1\",line=\"4\"}");
+    if (require_test(parser->parse(sample->c_str()),
+            "child location") == 0)
+        return 1;
+    if (require_test(
+            same_text(
+                parser->data->field("bkpt")->field(
+                    "locations")->at(0)->field(
+                    "line")->text(),
+                "4"),
+            "child line") == 0)
+        return 1;
+    print("mi 1\n");
+    return 0;
+}

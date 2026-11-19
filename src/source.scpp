@@ -1,0 +1,318 @@
+#ifndef DBG_SOURCE
+#define DBG_SOURCE
+
+/* Read a source file and search it. ELF, NUL bytes, and
+ * invalid UTF-8 are rejected. Find wraps and reports that. */
+
+#include <stdio>
+#include <stat>
+#include "util.scpp"
+
+enum {
+    SOURCE_OK,
+    SOURCE_MISSING,
+    SOURCE_BINARY,
+    SOURCE_ELF,
+    SOURCE_UTF8,
+    SOURCE_LARGE
+};
+
+class SourceText {
+public:
+    SourceText();
+    int load(const char *file);
+    int find_next(const char *needle, long from);
+    int find_prev(const char *needle, long from);
+    String *render(int current, int *breaks, int breakCount);
+    int utf8_ok(const char *bytes, long count);
+    int line_of(long index);
+    String *path;
+    String *body;
+    String *error;
+    String *note;
+    int kind;
+    long matchAt;
+};
+
+SourceText::SourceText() {
+    path = new String();
+    body = new String();
+    error = new String();
+    note = new String();
+    kind = SOURCE_MISSING;
+    matchAt = -1;
+}
+
+int SourceText::utf8_ok(const char *bytes, long count) {
+    long index;
+    int byte;
+    int need;
+    int cont;
+
+    index = 0;
+    while (index < count) {
+        byte = (unsigned char)bytes[index];
+        if (byte == 0)
+            return 0;
+        if (byte < 128) {
+            index = index + 1;
+        } else if ((byte & 224) == 192) {
+            need = 1;
+            if ((byte & 254) == 192)
+                return 0;
+            index = index + 1;
+            cont = 0;
+            while (cont < need) {
+                if (index >= count)
+                    return 0;
+                if (((unsigned char)bytes[index] & 192) != 128)
+                    return 0;
+                index = index + 1;
+                cont = cont + 1;
+            }
+        } else if ((byte & 240) == 224) {
+            need = 2;
+            index = index + 1;
+            cont = 0;
+            while (cont < need) {
+                if (index >= count)
+                    return 0;
+                if (((unsigned char)bytes[index] & 192) != 128)
+                    return 0;
+                index = index + 1;
+                cont = cont + 1;
+            }
+        } else if ((byte & 248) == 240) {
+            need = 3;
+            if (byte > 244)
+                return 0;
+            index = index + 1;
+            cont = 0;
+            while (cont < need) {
+                if (index >= count)
+                    return 0;
+                if (((unsigned char)bytes[index] & 192) != 128)
+                    return 0;
+                index = index + 1;
+                cont = cont + 1;
+            }
+        } else {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int SourceText::load(const char *file) {
+    File *stream;
+    struct stat info;
+    char buf[1024];
+    unsigned long got;
+    long index;
+    int binary;
+    int elf;
+
+    string_set(path, "");
+    string_set(body, "");
+    string_set(error, "");
+    kind = SOURCE_MISSING;
+    matchAt = -1;
+    if (file == nullptr || file[0] == 0) {
+        string_set(error, "missing path");
+        return 0;
+    }
+    if (stat(file, &info) != 0 || S_ISREG(info.st_mode) == 0) {
+        string_set(error, "not a readable file");
+        return 0;
+    }
+    if (info.st_size > 1048576) {
+        kind = SOURCE_LARGE;
+        string_set(error, "source file exceeds 1 MiB");
+        return 0;
+    }
+    stream = fopen(file, "r");
+    if (stream == nullptr) {
+        string_set(error, "not a readable file");
+        return 0;
+    }
+    binary = 0;
+    elf = 0;
+    got = fread(
+            (void *)buf,
+            (unsigned long)1,
+            (unsigned long)1024,
+            stream);
+    while (got > 0) {
+        if (body->size() == 0 && got >= 4
+                && (unsigned char)buf[0] == 127
+                && buf[1] == 'E'
+                && buf[2] == 'L'
+                && buf[3] == 'F')
+            elf = 1;
+        index = 0;
+        while (index < (long)got) {
+            if (buf[index] == 0)
+                binary = 1;
+            index = index + 1;
+        }
+        if (binary == 0 && elf == 0)
+            string_add_bytes(body, buf, (long)got);
+        got = fread(
+                (void *)buf,
+                (unsigned long)1,
+                (unsigned long)1024,
+                stream);
+    }
+    fclose(stream);
+    if (elf) {
+        kind = SOURCE_ELF;
+        string_set(body, "");
+        string_set(error, "executable file");
+        return 0;
+    }
+    if (binary) {
+        kind = SOURCE_BINARY;
+        string_set(body, "");
+        string_set(error, "binary or invalid UTF-8");
+        return 0;
+    }
+    if (utf8_ok(body->c_str(), body->size()) == 0) {
+        kind = SOURCE_BINARY;
+        string_set(body, "");
+        string_set(error, "binary or invalid UTF-8");
+        return 0;
+    }
+    kind = SOURCE_OK;
+    string_set(path, file);
+    return 1;
+}
+
+int SourceText::line_of(long index) {
+    long cursor;
+    int line;
+
+    line = 1;
+    cursor = 0;
+    if (index < 0)
+        index = 0;
+    if (index > body->size())
+        index = body->size();
+    while (cursor < index) {
+        if (body->at(cursor) == '\n')
+            line = line + 1;
+        cursor = cursor + 1;
+    }
+    return line;
+}
+
+int SourceText::find_next(const char *needle, long from) {
+    long at;
+
+    string_set(note, "");
+    matchAt = -1;
+    if (needle == nullptr || needle[0] == 0) {
+        string_set(note, "Not found");
+        return 0;
+    }
+    if (from < 0)
+        from = 0;
+    if (from > body->size())
+        from = body->size();
+    at = body->find(from, needle);
+    if (at >= 0) {
+        matchAt = at;
+        return 1;
+    }
+    at = body->find((long)0, needle);
+    if (at >= 0) {
+        matchAt = at;
+        string_set(note, "Wrapped");
+        return 1;
+    }
+    string_set(note, "Not found");
+    return 0;
+}
+
+int SourceText::find_prev(const char *needle, long from) {
+    long at;
+
+    string_set(note, "");
+    matchAt = -1;
+    if (needle == nullptr || needle[0] == 0) {
+        string_set(note, "Not found");
+        return 0;
+    }
+    if (from < 0)
+        from = 0;
+    at = body->rfind(from, needle);
+    if (at >= 0) {
+        matchAt = at;
+        return 1;
+    }
+    at = body->rfind(needle);
+    if (at >= 0) {
+        matchAt = at;
+        string_set(note, "Wrapped");
+        return 1;
+    }
+    string_set(note, "Not found");
+    return 0;
+}
+
+String *SourceText::render(
+        int current,
+        int *breaks,
+        int breakCount) {
+    String *view;
+    String *line;
+    long index;
+    long start;
+    int number;
+    int marked;
+    int cursor;
+    const char *digits;
+
+    view = new String();
+    index = 0;
+    number = 1;
+    while (index <= body->size()) {
+        start = index;
+        while (index < body->size() && body->at(index) != '\n')
+            index = index + 1;
+        line = new String();
+        string_add_bytes(line, body->c_str() + start, index - start);
+        marked = 0;
+        cursor = 0;
+        while (breaks != nullptr && cursor < breakCount) {
+            if (breaks[cursor] == number)
+                marked = 1;
+            cursor = cursor + 1;
+        }
+        if (number == current && marked != 0)
+            view->append(">*");
+        else if (number == current)
+            view->append("> ");
+        else if (marked != 0)
+            view->append("* ");
+        else
+            view->append("  ");
+        if (number < 10)
+            view->append("   ");
+        else if (number < 100)
+            view->append("  ");
+        else if (number < 1000)
+            view->append(" ");
+        digits = format("{}", number);
+        view->append(digits);
+        view->append(" |");
+        view->append(line->c_str());
+        view->append("\n");
+        if (index >= body->size())
+            break;
+        index = index + 1;
+        number = number + 1;
+    }
+    return view;
+}
+
+#endif

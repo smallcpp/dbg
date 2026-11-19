@@ -1,12 +1,12 @@
-# template
+# dbg
 
-Starter for an application written in scpp, the smallcpp language. This repository is a GitHub template. Copy it for a new program, then replace `src/hello.scpp`.
+Local GDB debugger for programs written in scpp. It launches GDB in MI mode, compiles a `.scpp` target with `scpp -g`, and shows the source, breakpoints, stack, locals, watches, threads, program output, and debugger console in a GTK window.
 
-`src/hello.scpp` prints one line, `hello, smallcpp`. `docs/hello.md` is the reader document for that program and for the build.
+`docs/debugger.md` is the guide. `docs/limits.md` records the cdbg behavior this program does not match, and why. `docs/coding-standard.md` is the smallcpp coding standard.
 
-Use the scripts in `scripts/`. Do not run `cmake` yourself to configure, build, or test. `scripts/setup` configures `build/` and starts a project shell. `build` in that shell compiles the program. `build test` runs the suite. `scripts/clean` removes the build products. No script installs the program, and there is no install step: run `bin/hello`.
+Use the scripts in `scripts/`. Do not run `cmake` yourself to configure, build, or test. `scripts/setup` configures `build/` and starts a project shell. `build` in that shell compiles `bin/dbg`. `build test` runs the suite. `scripts/clean` removes the build products. No script installs the program: run `bin/dbg`.
 
-`scpp` has to be on `PATH`, or installed at `$HOME/opt/smallcpp` (the compiler is `$HOME/opt/smallcpp/bin/scpp`). When `$HOME/.config/smallcpp/config.ini` exists, `scpp` reads header and library locations from it.
+`scpp` has to be on `PATH`, or installed at `$HOME/opt/smallcpp`. When `$HOME/.config/smallcpp/config.ini` exists, `scpp` reads header and library locations from it. GDB has to be on `PATH` unless `DBG_GDB` names it.
 
 Start at the checkout root:
 
@@ -14,7 +14,7 @@ Start at the checkout root:
 scripts/setup
 build
 build test
-../bin/hello
+../bin/dbg --help
 exit
 ```
 

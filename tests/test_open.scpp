@@ -1,0 +1,16 @@
+#include "../src/session.scpp"
+
+int main(void) {
+    DebugSession *session;
+
+    session = new DebugSession();
+    try {
+        session->open_gdb("gdb");
+        session->close_gdb();
+    } catch (Exception error) {
+        print("fail {:s}\n", error.message);
+        return 1;
+    }
+    print("open 1\n");
+    return 0;
+}

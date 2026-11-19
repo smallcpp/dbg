@@ -1,0 +1,36 @@
+#include "ui.scpp"
+
+int main(int argc, char **argv) {
+    LaunchRequest *launch;
+    DebuggerApp *app;
+    int built;
+
+    launch = new LaunchRequest();
+    launch->parse(argc, argv);
+    if (launch->action == LAUNCH_HELP) {
+        fputs(launch->message->c_str(), stdout);
+        return 0;
+    }
+    if (launch->action == LAUNCH_USAGE) {
+        fputs(launch->message->c_str(), stderr);
+        return 2;
+    }
+    if (launch->action == LAUNCH_MISSING) {
+        fputs(launch->message->c_str(), stderr);
+        return 1;
+    }
+    app = new DebuggerApp();
+    string_set(app->cliTarget, launch->target->c_str());
+    app->cliArgs = launch->arguments;
+    if (launch->arguments->values->size() > 0)
+        app->cliPending = 1;
+    built = app->build();
+    if (built == 77) {
+        fputs("dbg: error[DBG3003]: no display\n", stderr);
+        return 77;
+    }
+    if (built == 0)
+        return 1;
+    app->showing = 1;
+    return app->application->run();
+}

@@ -1,0 +1,381 @@
+#ifndef DBG_MI
+#define DBG_MI
+
+/* GDB/MI record parser and quoter. One record is one line.
+ * Tuples, lists, C-string escapes, and a numeric token are
+ * kept. A bkpt result may be followed by unlabelled child
+ * locations; those are stored on that breakpoint. */
+
+#include "util.scpp"
+
+class MiValue;
+
+VECTOR(MiValueVec, MiValue *)
+
+class MiValue {
+public:
+    MiValue();
+    void set_text(const char *value);
+    const char *text(void);
+    void add(const char *key, MiValue *child);
+    MiValue *field(const char *key);
+    long count(void);
+    MiValue *at(long index);
+    const char *key_at(long index);
+    String *body;
+    StringVec *keys;
+    MiValueVec *kids;
+};
+
+class MiParser {
+public:
+    MiParser();
+    int parse(const char *line);
+    String *quote(const char *text);
+    int valid;
+    String *token;
+    String *kind;
+    String *result;
+    MiValue *data;
+    const char *input;
+    long offset;
+    long length;
+    int peek(void);
+    int take(int expected);
+    String *word(void);
+    String *quoted(void);
+    MiValue *value(int depth);
+    void add_location(MiValue *child);
+};
+
+MiValue::MiValue() {
+    body = new String();
+    keys = new StringVec();
+    kids = new MiValueVec();
+}
+
+void MiValue::set_text(const char *value) {
+    string_set(body, value);
+}
+
+const char *MiValue::text(void) {
+    return body->c_str();
+}
+
+void MiValue::add(const char *key, MiValue *child) {
+    String *name;
+
+    if (key == nullptr)
+        key = "";
+    name = string_from(key);
+    keys->add(name);
+    kids->add(child);
+}
+
+MiValue *MiValue::field(const char *key) {
+    long index;
+    MiValue *empty;
+
+    index = 0;
+    while (index < keys->size()) {
+        if (same_text(keys->at(index)->c_str(), key))
+            return kids->at(index);
+        index = index + 1;
+    }
+    empty = new MiValue();
+    return empty;
+}
+
+long MiValue::count(void) {
+    return kids->size();
+}
+
+MiValue *MiValue::at(long index) {
+    if (index < 0 || index >= kids->size())
+        throw *new Exception("index");
+    return kids->at(index);
+}
+
+const char *MiValue::key_at(long index) {
+    if (index < 0 || index >= keys->size())
+        throw *new Exception("index");
+    return keys->at(index)->c_str();
+}
+
+MiParser::MiParser() {
+    valid = 0;
+    token = new String();
+    kind = new String();
+    result = new String();
+    data = new MiValue();
+    input = "";
+    offset = 0;
+    length = 0;
+}
+
+int MiParser::peek(void) {
+    unsigned char byte;
+
+    if (input == nullptr || offset >= length)
+        return -1;
+    byte = (unsigned char)input[offset];
+    return (int)byte;
+}
+
+int MiParser::take(int expected) {
+    if (peek() != expected) {
+        valid = 0;
+        return 0;
+    }
+    offset = offset + 1;
+    return 1;
+}
+
+String *MiParser::word(void) {
+    long start;
+    String *text;
+    int ch;
+
+    start = offset;
+    ch = peek();
+    while (ch >= 0 && ch != '=' && ch != ','
+            && ch != '}' && ch != ']') {
+        offset = offset + 1;
+        ch = peek();
+    }
+    if (start == offset)
+        valid = 0;
+    text = new String();
+    string_add_bytes(text, input + start, offset - start);
+    return text;
+}
+
+String *MiParser::quoted(void) {
+    String *text;
+    int ch;
+    int number;
+    int count;
+
+    text = new String();
+    if (take('"') == 0)
+        return text;
+    while (valid != 0 && peek() >= 0 && peek() != '"') {
+        ch = peek();
+        offset = offset + 1;
+        if (ch == '\\') {
+            if (peek() < 0) {
+                valid = 0;
+                return text;
+            }
+            ch = peek();
+            offset = offset + 1;
+            if (ch >= '0' && ch <= '7') {
+                number = ch - '0';
+                count = 1;
+                while (count < 3 && peek() >= '0'
+                        && peek() <= '7') {
+                    number = number * 8 + (peek() - '0');
+                    offset = offset + 1;
+                    count = count + 1;
+                }
+                if (number > 255) {
+                    valid = 0;
+                    return text;
+                }
+                ch = number;
+            } else if (ch == 'n') {
+                ch = '\n';
+            } else if (ch == 'r') {
+                ch = '\r';
+            } else if (ch == 't') {
+                ch = '\t';
+            } else if (ch == 'b') {
+                ch = '\b';
+            } else if (ch == 'f') {
+                ch = '\f';
+            } else if (ch == 'v') {
+                ch = '\v';
+            } else if (ch == '\\' || ch == '"'
+                    || ch == '\'') {
+                number = ch;
+                ch = number;
+            } else {
+                valid = 0;
+                return text;
+            }
+        }
+        text->add((char)ch);
+    }
+    take('"');
+    return text;
+}
+
+void MiParser::add_location(MiValue *child) {
+    MiValue *parent;
+    MiValue *locations;
+    const char *parentNumber;
+    const char *childNumber;
+
+    if (data->count() == 0) {
+        valid = 0;
+        return;
+    }
+    parent = data->at(data->count() - 1);
+    parentNumber = parent->field("number")->text();
+    childNumber = child->field("number")->text();
+    if (starts_text(childNumber, parentNumber) == 0
+            || childNumber[text_length(parentNumber)]
+            != '.') {
+        valid = 0;
+        return;
+    }
+    locations = parent->field("locations");
+    if (locations->count() == 0
+            && same_text(
+                parent->key_at(parent->count() - 1),
+                "locations") == 0) {
+        parent->add("locations", locations);
+    }
+    locations->add("", child);
+}
+
+MiValue *MiParser::value(int depth) {
+    MiValue *node;
+    int open;
+    int close;
+    String *key;
+
+    node = new MiValue();
+    if (depth > 32) {
+        valid = 0;
+        return node;
+    }
+    if (peek() == '"') {
+        String *piece;
+
+        piece = quoted();
+        node->set_text(piece->c_str());
+        return node;
+    }
+    open = peek();
+    if (open != '{' && open != '[') {
+        valid = 0;
+        return node;
+    }
+    offset = offset + 1;
+    close = '}';
+    if (open == '[')
+        close = ']';
+    while (valid != 0 && peek() >= 0 && peek() != close) {
+        key = new String();
+        if (peek() != '"' && peek() != '{'
+                && peek() != '[') {
+            key = word();
+            take('=');
+        } else if (open == '{') {
+            valid = 0;
+        }
+        node->add(key->c_str(), value(depth + 1));
+        if (peek() != close) {
+            take(',');
+            if (peek() == close)
+                valid = 0;
+        }
+    }
+    take(close);
+    return node;
+}
+
+int MiParser::parse(const char *line) {
+    int ch;
+
+    input = line;
+    if (input == nullptr)
+        input = "";
+    offset = 0;
+    length = text_length(input);
+    valid = 1;
+    string_set(token, "");
+    string_set(kind, "");
+    string_set(result, "");
+    data = new MiValue();
+    ch = peek();
+    while (is_digit(ch)) {
+        token->add((char)ch);
+        offset = offset + 1;
+        ch = peek();
+    }
+    ch = peek();
+    if (ch < 0) {
+        valid = 0;
+        return 0;
+    }
+    kind->add((char)ch);
+    offset = offset + 1;
+    if (ch == '~' || ch == '@' || ch == '&') {
+        String *piece;
+
+        piece = quoted();
+        data->set_text(piece->c_str());
+    } else if (ch == '^' || ch == '*' || ch == '='
+            || ch == '+') {
+        String *name;
+
+        name = word();
+        string_set(result, name->c_str());
+        while (valid != 0 && peek() >= 0) {
+            take(',');
+            if (peek() == '{' && data->count() > 0
+                    && same_text(
+                        data->key_at(data->count() - 1),
+                        "bkpt")) {
+                add_location(value(0));
+            } else {
+                String *key;
+
+                key = word();
+                take('=');
+                data->add(key->c_str(), value(0));
+            }
+        }
+    } else {
+        valid = 0;
+    }
+    if (offset != length)
+        valid = 0;
+    if (valid == 0)
+        return 0;
+    return 1;
+}
+
+String *MiParser::quote(const char *text) {
+    String *out;
+    int index;
+    int ch;
+
+    if (text == nullptr)
+        throw *new Exception("string");
+    out = new String();
+    out->append("\"");
+    index = 0;
+    while (text[index] != 0) {
+        ch = (unsigned char)text[index];
+        if (ch == '\\' || ch == '"') {
+            out->append("\\");
+            out->add((char)ch);
+        } else if (ch == '\n') {
+            out->append("\\n");
+        } else if (ch == '\r') {
+            out->append("\\r");
+        } else if (ch == '\t') {
+            out->append("\\t");
+        } else {
+            out->add((char)ch);
+        }
+        index = index + 1;
+    }
+    out->append("\"");
+    return out;
+}
+
+#endif

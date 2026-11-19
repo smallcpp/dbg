@@ -1,0 +1,302 @@
+#include "../src/session.scpp"
+#include "../src/compile.scpp"
+#include <stdio>
+#include <stdlib>
+
+int compile_to(
+        const char *compiler,
+        const char *source,
+        const char *output) {
+    ProgramCompiler *tool;
+
+    tool = new ProgramCompiler();
+    if (tool->compile(compiler, source, output) == 0) {
+        print("fail compile {:s}\n", tool->log->c_str());
+        return 0;
+    }
+    return 1;
+}
+
+int local_is(
+        DebugSession *session,
+        const char *name,
+        const char *value) {
+    long index;
+
+    index = 0;
+    while (index < session->locals->size()) {
+        if (same_text(
+                session->locals->at(index)->name->c_str(),
+                name))
+            return same_text(
+                    session->locals->at(index)->value->c_str(),
+                    value);
+        index = index + 1;
+    }
+    return 0;
+}
+
+int has_local(DebugSession *session, const char *name) {
+    long index;
+
+    index = 0;
+    while (index < session->locals->size()) {
+        if (same_text(
+                session->locals->at(index)->name->c_str(),
+                name))
+            return 1;
+        index = index + 1;
+    }
+    return 0;
+}
+
+void show(DebugSession *session) {
+    print("status {:s}\n", session->status->c_str());
+    print("console {:s}\n", session->console->c_str());
+    print("program {:s}\n", session->program->c_str());
+}
+
+int main(int argc, char **argv) {
+    DebugSession *session;
+    ProgramCompiler *tool;
+    const char *walk;
+    const char *spin;
+    const char *compiler;
+    char dir[64];
+    char exe[80];
+    char spinExe[80];
+    int index;
+    int caught;
+    String *addBreak;
+    String *unusedBreak;
+
+    if (argc < 4)
+        return 1;
+    walk = argv[1];
+    spin = argv[2];
+    compiler = argv[3];
+    index = 0;
+    while (index < 18) {
+        dir[index] = "/tmp/dbgsessXXXXXX"[index];
+        index = index + 1;
+    }
+    dir[index] = 0;
+    if (mkdtemp(dir) == nullptr)
+        return 1;
+    index = 0;
+    while (dir[index] != 0) {
+        exe[index] = dir[index];
+        spinExe[index] = dir[index];
+        index = index + 1;
+    }
+    exe[index] = '/';
+    spinExe[index] = '/';
+    index = index + 1;
+    exe[index] = 'w';
+    spinExe[index] = 's';
+    index = index + 1;
+    exe[index] = 0;
+    spinExe[index] = 0;
+    tool = new ProgramCompiler();
+    if (compile_to(compiler, walk, exe) == 0)
+        return 1;
+    if (compile_to(compiler, spin, spinExe) == 0)
+        return 1;
+    (void)tool;
+    session = new DebugSession();
+    try {
+        session->open_gdb("gdb");
+        session->load_program(exe);
+        session->breakAtStart = 0;
+        caught = 0;
+        try {
+            session->insert_breakpoint(walk, 14);
+        } catch (Exception error) {
+            caught = 1;
+            if (starts_text(error.message, "dbg: error[") == 0) {
+                print("fail code {:s}\n", error.message);
+                return 1;
+            }
+        }
+        if (require_test(caught, "blank line") == 0)
+            return 1;
+        session->set_arguments("one 'two words' ''");
+        session->insert_breakpoint(walk, 12);
+        addBreak = string_from(session->lastNumber->c_str());
+        session->insert_breakpoint(walk, 5);
+        unusedBreak = string_from(session->lastNumber->c_str());
+        session->run_program();
+        if (require_test(
+                session->state == DEBUG_STOPPED,
+                "stopped in add") == 0) {
+            show(session);
+            return 1;
+        }
+        if (require_test(
+                same_text(session->stopFunc->c_str(), "add"),
+                "func add") == 0) {
+            show(session);
+            return 1;
+        }
+        if (require_test(session->stopLine == 12, "line 12") == 0) {
+            show(session);
+            return 1;
+        }
+        if (require_test(local_is(session, "left", "4"), "left") == 0) {
+            show(session);
+            return 1;
+        }
+        if (require_test(
+                local_is(session, "right", "5"),
+                "right") == 0) {
+            show(session);
+            return 1;
+        }
+        session->set_condition(addBreak->c_str(), "left==4");
+        session->set_ignore(addBreak->c_str(), 0);
+        session->refresh_breaks();
+        index = 0;
+        caught = 0;
+        while (index < session->breaks->size()) {
+            if (same_text(
+                    session->breaks->at(index)->number->c_str(),
+                    addBreak->c_str())
+                    && session->breaks->at(index)->condition->find(
+                        "left") >= 0)
+                caught = 1;
+            index = index + 1;
+        }
+        if (require_test(caught, "condition") == 0) {
+            show(session);
+            return 1;
+        }
+        session->add_watch("left+right");
+        if (require_test(
+                same_text(
+                    session->watches->at(0)->value->c_str(),
+                    "9"),
+                "watch") == 0) {
+            show(session);
+            return 1;
+        }
+        session->add_watch("add(1, 2)");
+        if (require_test(
+                session->watches->at(1)->error->size() > 0,
+                "reject call") == 0)
+            return 1;
+        if (require_test(session->frames->size() >= 2, "stack") == 0)
+            return 1;
+        if (require_test(
+                same_text(
+                    session->frames->at(1)->func->c_str(),
+                    "main"),
+                "caller") == 0)
+            return 1;
+        session->select_frame(1);
+        if (require_test(has_local(session, "argc"), "argc frame") == 0) {
+            show(session);
+            return 1;
+        }
+        session->select_frame(0);
+        session->step_out();
+        if (require_test(
+                session->state == DEBUG_STOPPED
+                && same_text(session->stopFunc->c_str(), "main"),
+                "step out") == 0) {
+            show(session);
+            return 1;
+        }
+        session->continue_program();
+        if (require_test(
+                session->state == DEBUG_EXITED,
+                "exited") == 0) {
+            show(session);
+            return 1;
+        }
+        if (require_test(
+                session->program->find("value 9") >= 0,
+                "output") == 0) {
+            show(session);
+            return 1;
+        }
+        if (require_test(session->missedCount >= 1, "unreached") == 0) {
+            show(session);
+            return 1;
+        }
+        if (require_test(
+                session->console->find("Not reached") >= 0,
+                "unreached text") == 0) {
+            show(session);
+            return 1;
+        }
+        session->enable_breakpoint(addBreak->c_str(), 0);
+        session->delete_breakpoint(unusedBreak->c_str());
+        session->insert_breakpoint(walk, 20);
+        session->run_program();
+        if (require_test(
+                session->state == DEBUG_STOPPED
+                && session->stopLine == 20
+                && local_is(session, "argc", "4")
+                && local_is(session, "value", "9"),
+                "arguments") == 0) {
+            show(session);
+            return 1;
+        }
+        session->remove_watch(1);
+        session->remove_watch(0);
+        session->close_gdb();
+        session->open_gdb("gdb");
+        session->load_program(exe);
+        session->breakAtStart = 1;
+        session->run_program();
+        if (require_test(
+                session->state == DEBUG_STOPPED
+                && starts_text(
+                    session->status->c_str(),
+                    "Stopped at start"),
+                "start") == 0) {
+            show(session);
+            return 1;
+        }
+        session->step_over();
+        if (require_test(
+                session->state == DEBUG_STOPPED
+                && same_text(session->stopFunc->c_str(), "main"),
+                "step over") == 0) {
+            show(session);
+            return 1;
+        }
+        session->close_gdb();
+        session->open_gdb("gdb");
+        session->load_program(spinExe);
+        session->breakAtStart = 0;
+        session->begin_run();
+        if (require_test(
+                session->state == DEBUG_RUNNING,
+                "running") == 0) {
+            show(session);
+            return 1;
+        }
+        session->interrupt_program();
+        if (require_test(
+                session->state == DEBUG_STOPPED,
+                "interrupt") == 0) {
+            show(session);
+            return 1;
+        }
+        if (require_test(session->threads->size() >= 1, "thread") == 0)
+            return 1;
+        session->select_thread(
+                session->threads->at(0)->id->c_str());
+        session->close_gdb();
+    } catch (Exception error) {
+        print("fail {:s}\n", error.message);
+        show(session);
+        return 1;
+    }
+    unlink(exe);
+    unlink(spinExe);
+    rmdir(dir);
+    print("session 1\n");
+    return 0;
+}

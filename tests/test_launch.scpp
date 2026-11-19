@@ -1,0 +1,73 @@
+#include "../src/launch.scpp"
+
+int main(void) {
+    LaunchRequest *launch;
+
+    launch = new LaunchRequest();
+    launch->parse(1, nullptr);
+    if (require_test(launch->action == LAUNCH_OPEN, "bare") == 0)
+        return 1;
+    {
+        char *argv[4];
+
+        argv[0] = (char *)"dbg";
+        argv[1] = (char *)"--help";
+        argv[2] = (char *)"ignored";
+        argv[3] = nullptr;
+        launch->parse(3, argv);
+        if (require_test(
+                launch->action == LAUNCH_HELP,
+                "help") == 0)
+            return 1;
+        if (require_test(
+                launch->message->find("Usage:") == 0,
+                "usage") == 0)
+            return 1;
+        argv[1] = (char *)"--bogus";
+        launch->parse(2, argv);
+        if (require_test(
+                launch->action == LAUNCH_USAGE,
+                "option") == 0)
+            return 1;
+        if (require_test(
+                launch->message->find("unknown option") > 0,
+                "option text") == 0)
+            return 1;
+        argv[1] = (char *)"missing.scpp";
+        launch->parse(2, argv);
+        if (require_test(
+                launch->action == LAUNCH_MISSING,
+                "missing") == 0)
+            return 1;
+        if (require_test(
+                launch->message->find("DBG1001") > 0,
+                "missing code") == 0)
+            return 1;
+        argv[1] = (char *)"/etc/passwd";
+        argv[2] = (char *)"extra";
+        launch->parse(3, argv);
+        if (require_test(
+                launch->action == LAUNCH_USAGE,
+                "positional") == 0)
+            return 1;
+        argv[2] = (char *)"--";
+        argv[3] = (char *)"one";
+        launch->parse(4, argv);
+        if (require_test(
+                launch->action == LAUNCH_OPEN,
+                "remainder") == 0)
+            return 1;
+        if (require_test(
+                launch->arguments->values->size() == 1,
+                "one arg") == 0)
+            return 1;
+        if (require_test(
+                same_text(
+                    launch->arguments->values->at(0)->c_str(),
+                    "one"),
+                "arg text") == 0)
+            return 1;
+    }
+    print("launch 1\n");
+    return 0;
+}

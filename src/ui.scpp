@@ -1,0 +1,1490 @@
+#ifndef DBG_UI
+#define DBG_UI
+
+/* GTK window for the debugger. GDB calls are synchronous, so
+ * the window does not take clicks while a run is in progress.
+ * The source view is read-only. Breakpoint lines are marked
+ * in the text because there is no gutter widget. */
+
+#include <stat>
+#include <stdio>
+#include <stdlib>
+#include <gtk>
+#include "session.scpp"
+#include "compile.scpp"
+#include "source.scpp"
+#include "launch.scpp"
+
+using namespace Gtk;
+
+class DebuggerApp {
+public:
+    DebuggerApp();
+    int build(void);
+    void present_window(void);
+    void show_message(const char *text);
+    void show_error(const char *code, const char *text);
+    int wants_alert(const char *text);
+    void refresh_views(void);
+    void follow_stop(void);
+    void paint_source(void);
+    int same_source(DebugBreak *point);
+    int load_target(const char *path);
+    int open_source_file(const char *path, int quiet);
+    int compile_source(const char *source);
+    void restore_target(int useCli);
+    void store_target(void);
+    void save_project(void);
+    void do_run(void);
+    void do_pause(void);
+    void do_into(void);
+    void do_over(void);
+    void do_out(void);
+    void do_restart(void);
+    void toggle_break(void);
+    void toggle_enabled(void);
+    void apply_condition(void);
+    void apply_ignore(void);
+    void add_watch_text(void);
+    void do_find(int next);
+    void pick_frame(long row);
+    void pick_thread(long row);
+    void apply_session(void);
+    void open_session_dialog(void);
+    void shutdown(void);
+    int break_number(int line, String *number);
+    void hold(const char *text);
+    const char *held_text(void);
+    int is_scpp(const char *path);
+    int read_count(const char *text);
+    void fill_locals(void);
+    void fill_watches(void);
+    void fill_stack(void);
+    void fill_breaks(void);
+    void fill_threads(void);
+    DebugSession *session;
+    ProjectSettings *settings;
+    SourceText *source;
+    ProgramCompiler *compiler;
+    String *compilerPath;
+    String *gdbPath;
+    String *targetPath;
+    String *buildDir;
+    String *buildExe;
+    String *cliTarget;
+    ArgumentList *cliArgs;
+    StringVec *held;
+    int cliPending;
+    int argsFromCli;
+    int showing;
+    int painting;
+    int cursorLine;
+    int built;
+    Application *application;
+    Window *window;
+    Label *statusLabel;
+    Entry *pathEntry;
+    Entry *findEntry;
+    Entry *watchEntry;
+    Entry *condEntry;
+    Entry *ignoreEntry;
+    Entry *argEntry;
+    Entry *dirEntry;
+    TextBuffer *sourceBuffer;
+    TextView *sourceView;
+    TextBuffer *programBuffer;
+    TextBuffer *consoleBuffer;
+    TextBuffer *envBuffer;
+    ColumnView *localView;
+    ColumnView *watchView;
+    ColumnView *stackView;
+    ColumnView *breakView;
+    ColumnView *threadView;
+    CheckButton *startCheck;
+    CheckButton *prefStart;
+    Box *localBox;
+    Box *watchBox;
+    Box *stackBox;
+    Box *breakBox;
+    Box *threadBox;
+    Box *outputBox;
+    Box *consoleBox;
+    Dialog *sessionDialog;
+    FileDialog *loadDialog;
+    FileDialog *sourceDialog;
+    Button *runButton;
+};
+
+DebuggerApp *debugger;
+
+void on_run(void *data);
+void on_pause(void *data);
+void on_into(void *data);
+void on_over(void *data);
+void on_out(void *data);
+void on_restart(void *data);
+void on_session(void *data);
+void on_load(void *data);
+void on_find_next(void *data);
+void on_find_prev(void *data);
+void on_watch(void *data);
+void on_condition(void *data);
+void on_ignore(void *data);
+void on_file_menu(void *data, const char *label);
+void on_break_menu(void *data, const char *label);
+void on_stack(void *data, long row);
+void on_thread(void *data, long row);
+void on_move(void *data, long line, long offset);
+void on_prefs(void *data, int response);
+void on_load_pick(void *data, const char *path);
+void on_source_pick(void *data, const char *path);
+void on_alert(void *data);
+bool on_close(void *data);
+void on_start(void *data, bool value);
+void on_local_pane(void *data, bool value);
+void on_watch_pane(void *data, bool value);
+void on_stack_pane(void *data, bool value);
+void on_break_pane(void *data, bool value);
+void on_thread_pane(void *data, bool value);
+void on_output_pane(void *data, bool value);
+void on_console_pane(void *data, bool value);
+void on_activate(void *data);
+
+DebuggerApp::DebuggerApp() {
+    const char *env;
+
+    session = new DebugSession();
+    settings = new ProjectSettings();
+    source = new SourceText();
+    compiler = new ProgramCompiler();
+    compilerPath = new String();
+    gdbPath = new String();
+    targetPath = new String();
+    buildDir = new String();
+    buildExe = new String();
+    cliTarget = new String();
+    cliArgs = new ArgumentList();
+    held = new StringVec();
+    cliPending = 0;
+    argsFromCli = 0;
+    showing = 0;
+    painting = 0;
+    cursorLine = 1;
+    built = 0;
+    application = nullptr;
+    window = nullptr;
+    statusLabel = nullptr;
+    env = getenv("DBG_COMPILER");
+    if (env == nullptr || env[0] == 0)
+        env = "scpp";
+    string_set(compilerPath, env);
+    env = getenv("DBG_GDB");
+    if (env == nullptr || env[0] == 0)
+        env = "gdb";
+    string_set(gdbPath, env);
+}
+
+int DebuggerApp::is_scpp(const char *path) {
+    return ends_text(path, ".scpp");
+}
+
+void DebuggerApp::hold(const char *text) {
+    if (text == nullptr)
+        text = "";
+    held->add(string_from(text));
+}
+
+const char *DebuggerApp::held_text(void) {
+    return held->at(held->size() - 1)->c_str();
+}
+
+int DebuggerApp::read_count(const char *text) {
+    int value;
+    int index;
+
+    if (text == nullptr || text[0] == 0)
+        return 0;
+    value = 0;
+    index = 0;
+    while (text[index] != 0) {
+        if (is_digit((unsigned char)text[index]) == 0)
+            return -1;
+        value = value * 10 + (text[index] - '0');
+        index = index + 1;
+    }
+    return value;
+}
+
+int DebuggerApp::wants_alert(const char *text) {
+    String *probe;
+
+    probe = string_from(text);
+    if (probe->find("DBG1001") >= 0)
+        return 1;
+    if (probe->find("DBG3001") >= 0)
+        return 1;
+    return 0;
+}
+
+void DebuggerApp::show_message(const char *text) {
+    AlertDialog *notice;
+
+    if (text == nullptr || text[0] == 0)
+        text = "dbg: error[DBG3002]: failed";
+    if (statusLabel != nullptr)
+        statusLabel->set_text(text);
+    fputs(text, stderr);
+    fputs("\n", stderr);
+    if (session->console->find(text) < 0) {
+        session->append_console(text);
+        session->append_console("\n");
+    }
+    if (consoleBuffer != nullptr)
+        consoleBuffer->set_text(session->console->c_str());
+    if (showing != 0 && wants_alert(text) != 0) {
+        notice = new AlertDialog(text, "dbg");
+        notice->present(on_alert, nullptr);
+    }
+}
+
+void DebuggerApp::show_error(
+        const char *code,
+        const char *text) {
+    String *message;
+
+    if (text == nullptr)
+        text = "failed";
+    message = new String();
+    message->append("dbg: error[");
+    message->append(code);
+    message->append("]: ");
+    message->append(text);
+    show_message(message->c_str());
+}
+
+int DebuggerApp::same_source(DebugBreak *point) {
+    if (point->file->size() == 0
+            && point->fullname->size() == 0)
+        return 0;
+    if (same_text(
+            point->fullname->c_str(),
+            source->path->c_str()))
+        return 1;
+    if (same_text(
+            point->file->c_str(),
+            source->path->c_str()))
+        return 1;
+    if (point->file->size() > 0
+            && ends_text(
+                source->path->c_str(),
+                point->file->c_str()))
+        return 1;
+    return 0;
+}
+
+int DebuggerApp::break_number(int line, String *number) {
+    long index;
+    DebugBreak *point;
+
+    string_set(number, "");
+    index = 0;
+    while (index < session->breaks->size()) {
+        point = session->breaks->at(index);
+        if (point->line == line && same_source(point) != 0) {
+            string_set(number, point->number->c_str());
+            return 1;
+        }
+        index = index + 1;
+    }
+    return 0;
+}
+
+void DebuggerApp::paint_source(void) {
+    String *text;
+    int marks[256];
+    int count;
+    int line;
+    long index;
+    TextIter *from;
+    TextIter *to;
+
+    if (source->kind != SOURCE_OK) {
+        painting = 1;
+        sourceBuffer->set_text("No source\n");
+        painting = 0;
+        return;
+    }
+    count = 0;
+    index = 0;
+    while (index < session->breaks->size() && count < 256) {
+        if (session->breaks->at(index)->line > 0
+                && same_source(session->breaks->at(index)) != 0) {
+            marks[count] = session->breaks->at(index)->line;
+            count = count + 1;
+        }
+        index = index + 1;
+    }
+    if (session->state == DEBUG_STOPPED
+            && session->stopLine > 0)
+        line = session->stopLine;
+    else
+        line = cursorLine;
+    text = source->render(line, marks, count);
+    painting = 1;
+    sourceBuffer->set_text(text->c_str());
+    painting = 0;
+    if (line <= 0)
+        return;
+    try {
+        from = new TextIter((long)line - 1, (long)0);
+        to = new TextIter((long)line - 1, (long)2);
+        sourceBuffer->apply_tag("here", from, to);
+        sourceView->scroll_to((long)line - 1, (long)0);
+    } catch (Exception error) {
+        (void)error;
+    }
+}
+
+void DebuggerApp::fill_locals(void) {
+    const char *cells[2];
+    long index;
+
+    localView->clear_rows();
+    held = new StringVec();
+    index = 0;
+    while (index < session->locals->size()) {
+        hold(session->locals->at(index)->name->c_str());
+        cells[0] = held_text();
+        hold(session->locals->at(index)->value->c_str());
+        cells[1] = held_text();
+        localView->append_row(cells, 2);
+        index = index + 1;
+    }
+}
+
+void DebuggerApp::fill_watches(void) {
+    const char *cells[2];
+    DebugWatch *watch;
+    long index;
+
+    watchView->clear_rows();
+    held = new StringVec();
+    index = 0;
+    while (index < session->watches->size()) {
+        watch = session->watches->at(index);
+        hold(watch->expression->c_str());
+        cells[0] = held_text();
+        if (watch->error->size() > 0)
+            hold(watch->error->c_str());
+        else
+            hold(watch->value->c_str());
+        cells[1] = held_text();
+        watchView->append_row(cells, 2);
+        index = index + 1;
+    }
+}
+
+void DebuggerApp::fill_stack(void) {
+    const char *cells[3];
+    DebugFrame *frame;
+    String *where;
+    long index;
+
+    stackView->clear_rows();
+    held = new StringVec();
+    index = 0;
+    while (index < session->frames->size()) {
+        frame = session->frames->at(index);
+        hold(format("{}", frame->level));
+        cells[0] = held_text();
+        hold(frame->func->c_str());
+        cells[1] = held_text();
+        where = new String();
+        where->append(frame->file->c_str());
+        where->append(":");
+        where->append(format("{}", frame->line));
+        hold(where->c_str());
+        cells[2] = held_text();
+        stackView->append_row(cells, 3);
+        index = index + 1;
+    }
+}
+
+void DebuggerApp::fill_breaks(void) {
+    const char *cells[3];
+    DebugBreak *point;
+    String *where;
+    long index;
+
+    breakView->clear_rows();
+    held = new StringVec();
+    index = 0;
+    while (index < session->breaks->size()) {
+        point = session->breaks->at(index);
+        hold(point->number->c_str());
+        cells[0] = held_text();
+        where = new String();
+        where->append(point->file->c_str());
+        where->append(":");
+        where->append(format("{}", point->line));
+        if (point->enabled == 0)
+            where->append(" disabled");
+        else
+            where->append(" enabled");
+        if (point->pending != 0)
+            where->append(" pending");
+        hold(where->c_str());
+        cells[1] = held_text();
+        hold(format("{}", point->hits));
+        cells[2] = held_text();
+        breakView->append_row(cells, 3);
+        index = index + 1;
+    }
+}
+
+void DebuggerApp::fill_threads(void) {
+    const char *cells[2];
+    long index;
+
+    threadView->clear_rows();
+    held = new StringVec();
+    index = 0;
+    while (index < session->threads->size()) {
+        hold(session->threads->at(index)->id->c_str());
+        cells[0] = held_text();
+        hold(session->threads->at(index)->name->c_str());
+        cells[1] = held_text();
+        threadView->append_row(cells, 2);
+        index = index + 1;
+    }
+}
+
+void DebuggerApp::follow_stop(void) {
+    if (session->state != DEBUG_STOPPED)
+        return;
+    if (session->stopLine > 0)
+        cursorLine = session->stopLine;
+    if (session->stopFull->size() == 0)
+        return;
+    if (same_text(
+            source->path->c_str(),
+            session->stopFull->c_str()))
+        return;
+    if (access(session->stopFull->c_str(), R_OK) != 0)
+        return;
+    open_source_file(session->stopFull->c_str(), 1);
+}
+
+void DebuggerApp::refresh_views(void) {
+    if (built == 0)
+        return;
+    follow_stop();
+    if (statusLabel != nullptr)
+        statusLabel->set_text(session->status->c_str());
+    paint_source();
+    fill_locals();
+    fill_watches();
+    fill_stack();
+    fill_breaks();
+    fill_threads();
+    programBuffer->set_text(session->program->c_str());
+    consoleBuffer->set_text(session->console->c_str());
+    if (session->breakAtStart != 0)
+        startCheck->set_active(true);
+    else
+        startCheck->set_active(false);
+}
+
+int DebuggerApp::open_source_file(
+        const char *path,
+        int quiet) {
+    SourceText *trial;
+
+    trial = new SourceText();
+    if (trial->load(path) == 0) {
+        if (quiet == 0)
+            show_error("DBG1001", trial->error->c_str());
+        return 0;
+    }
+    source = trial;
+    cursorLine = 1;
+    return 1;
+}
+
+int DebuggerApp::compile_source(const char *sourcePath) {
+    char raw[64];
+    int index;
+
+    index = 0;
+    while (index < 18) {
+        raw[index] = "/tmp/dbgworkXXXXXX"[index];
+        index = index + 1;
+    }
+    raw[index] = 0;
+    if (mkdtemp(raw) == nullptr) {
+        show_error(
+                "DBG3001",
+                "could not create a build directory");
+        return 0;
+    }
+    string_set(buildDir, raw);
+    string_set(buildExe, raw);
+    buildExe->append("/prog");
+    if (compiler->compile(
+            compilerPath->c_str(),
+            sourcePath,
+            buildExe->c_str()) == 0) {
+        show_error("DBG3001", compiler->log->c_str());
+        unlink(buildExe->c_str());
+        rmdir(buildDir->c_str());
+        string_set(buildDir, "");
+        string_set(buildExe, "");
+        return 0;
+    }
+    return 1;
+}
+
+void DebuggerApp::restore_target(int useCli) {
+    SavedTarget *target;
+    SavedPoint *point;
+    long index;
+
+    target = settings->ensure(targetPath->c_str());
+    argsFromCli = useCli;
+    try {
+        if (useCli != 0)
+            session->set_arguments(cliArgs->display()->c_str());
+        else
+            session->set_arguments(target->arguments->c_str());
+        session->set_environment(target->envText->c_str());
+        session->set_directory(target->cwd->c_str());
+    } catch (Exception error) {
+        show_message(error.message);
+    }
+    if (target->hasBreak != 0)
+        session->breakAtStart = target->breakAtStart;
+    else
+        session->breakAtStart = settings->breakAtStart;
+    index = 0;
+    while (index < target->points->size()) {
+        point = target->points->at(index);
+        try {
+            session->insert_breakpoint(
+                    point->file->c_str(),
+                    point->line);
+            if (point->enabled == 0)
+                session->enable_breakpoint(
+                        session->lastNumber->c_str(),
+                        0);
+            if (point->condition->size() > 0)
+                session->set_condition(
+                        session->lastNumber->c_str(),
+                        point->condition->c_str());
+            if (point->hitCount > 0)
+                session->set_ignore(
+                        session->lastNumber->c_str(),
+                        point->hitCount);
+        } catch (Exception error) {
+            (void)error;
+        }
+        index = index + 1;
+    }
+    index = 0;
+    while (index < target->watches->size()) {
+        try {
+            session->add_watch(
+                    target->watches->at(index)->expression->c_str());
+        } catch (Exception error) {
+            (void)error;
+            break;
+        }
+        index = index + 1;
+    }
+}
+
+void DebuggerApp::store_target(void) {
+    SavedTarget *target;
+    SavedPoint *point;
+    SavedWatch *watch;
+    DebugBreak *item;
+    long index;
+
+    if (targetPath->size() == 0)
+        return;
+    target = settings->ensure(targetPath->c_str());
+    target->hasBreak = 1;
+    target->breakAtStart = session->breakAtStart;
+    if (argsFromCli == 0)
+        string_set(
+                target->arguments,
+                session->arguments->display()->c_str());
+    string_set(target->cwd, session->directory->c_str());
+    string_set(
+            target->envText,
+            session->environment->display()->c_str());
+    target->points = new PointVec();
+    index = 0;
+    while (index < session->breaks->size() && index < 256) {
+        item = session->breaks->at(index);
+        point = new SavedPoint();
+        if (item->fullname->size() > 0)
+            string_set(point->file, item->fullname->c_str());
+        else
+            string_set(point->file, item->file->c_str());
+        point->line = item->line;
+        point->enabled = item->enabled;
+        string_set(point->condition, item->condition->c_str());
+        point->hitCount = 0;
+        target->points->add(point);
+        index = index + 1;
+    }
+    target->watches = new WatchVec();
+    index = 0;
+    while (index < session->watches->size() && index < 64) {
+        watch = new SavedWatch();
+        string_set(
+                watch->expression,
+                session->watches->at(index)->expression->c_str());
+        target->watches->add(watch);
+        index = index + 1;
+    }
+}
+
+void DebuggerApp::save_project(void) {
+    if (settings->save(".dbg.toml") == 0)
+        show_error("DBG2001", settings->error->c_str());
+}
+
+int DebuggerApp::load_target(const char *path) {
+    String *key;
+    String *cliKey;
+    String *exe;
+    int useCli;
+    int compiled;
+
+    if (path == nullptr || path[0] == 0) {
+        show_error("DBG1001", "missing target");
+        return 0;
+    }
+    key = canonical_path(path);
+    compiled = 0;
+    if (is_scpp(path) != 0) {
+        if (compile_source(path) == 0)
+            return 0;
+        compiled = 1;
+        exe = string_from(buildExe->c_str());
+    } else {
+        exe = string_from(path);
+    }
+    useCli = 0;
+    if (cliPending != 0 && cliTarget->size() > 0) {
+        cliKey = canonical_path(cliTarget->c_str());
+        if (same_text(key->c_str(), cliKey->c_str()))
+            useCli = 1;
+    }
+    try {
+        session->close_gdb();
+        session->open_gdb(gdbPath->c_str());
+        session->load_program(exe->c_str());
+        if (compiled != 0)
+            session->note_temp(
+                    buildDir->c_str(),
+                    buildExe->c_str());
+        string_set(targetPath, key->c_str());
+        if (pathEntry != nullptr)
+            pathEntry->set_text(path);
+        if (is_scpp(path) != 0)
+            open_source_file(path, 0);
+        restore_target(useCli);
+        refresh_views();
+        return 1;
+    } catch (Exception error) {
+        show_message(error.message);
+        refresh_views();
+        return 0;
+    }
+}
+
+void DebuggerApp::do_run(void) {
+    try {
+        if (session->state == DEBUG_EMPTY)
+            session->fail("DBG1000", "no target is loaded");
+        session->run_program();
+        refresh_views();
+    } catch (Exception error) {
+        refresh_views();
+        show_message(error.message);
+    }
+}
+
+void DebuggerApp::do_pause(void) {
+    try {
+        session->interrupt_program();
+        refresh_views();
+    } catch (Exception error) {
+        refresh_views();
+        show_message(error.message);
+    }
+}
+
+void DebuggerApp::do_into(void) {
+    try {
+        session->step_into();
+        refresh_views();
+    } catch (Exception error) {
+        refresh_views();
+        show_message(error.message);
+    }
+}
+
+void DebuggerApp::do_over(void) {
+    try {
+        session->step_over();
+        refresh_views();
+    } catch (Exception error) {
+        refresh_views();
+        show_message(error.message);
+    }
+}
+
+void DebuggerApp::do_out(void) {
+    try {
+        session->step_out();
+        refresh_views();
+    } catch (Exception error) {
+        refresh_views();
+        show_message(error.message);
+    }
+}
+
+void DebuggerApp::do_restart(void) {
+    int loaded;
+
+    try {
+        if (targetPath->size() == 0)
+            session->fail("DBG1000", "no target is loaded");
+        if (is_scpp(targetPath->c_str()) != 0) {
+            store_target();
+            loaded = load_target(targetPath->c_str());
+            if (loaded != 0)
+                session->run_program();
+        } else {
+            session->restart_program();
+        }
+        refresh_views();
+    } catch (Exception error) {
+        refresh_views();
+        show_message(error.message);
+    }
+}
+
+void DebuggerApp::toggle_break(void) {
+    String *number;
+
+    try {
+        if (session->state == DEBUG_EMPTY)
+            session->fail("DBG1000", "no target is loaded");
+        if (source->kind != SOURCE_OK)
+            session->fail("DBG1000", "no source is open");
+        number = new String();
+        if (break_number(cursorLine, number) != 0)
+            session->delete_breakpoint(number->c_str());
+        else
+            session->insert_breakpoint(
+                    source->path->c_str(),
+                    cursorLine);
+        store_target();
+        save_project();
+        refresh_views();
+    } catch (Exception error) {
+        refresh_views();
+        show_message(error.message);
+    }
+}
+
+void DebuggerApp::toggle_enabled(void) {
+    String *number;
+    long index;
+    int enabled;
+
+    try {
+        if (source->kind != SOURCE_OK)
+            session->fail("DBG1000", "no source is open");
+        number = new String();
+        if (break_number(cursorLine, number) == 0)
+            session->fail(
+                    "DBG1000",
+                    "no breakpoint at this line");
+        enabled = 1;
+        index = 0;
+        while (index < session->breaks->size()) {
+            if (same_text(
+                    session->breaks->at(index)->number->c_str(),
+                    number->c_str()))
+                enabled = session->breaks->at(index)->enabled;
+            index = index + 1;
+        }
+        if (enabled != 0)
+            session->enable_breakpoint(number->c_str(), 0);
+        else
+            session->enable_breakpoint(number->c_str(), 1);
+        store_target();
+        save_project();
+        refresh_views();
+    } catch (Exception error) {
+        refresh_views();
+        show_message(error.message);
+    }
+}
+
+void DebuggerApp::apply_condition(void) {
+    String *number;
+
+    try {
+        number = new String();
+        if (break_number(cursorLine, number) == 0)
+            session->fail(
+                    "DBG1000",
+                    "no breakpoint at this line");
+        session->set_condition(
+                number->c_str(),
+                condEntry->text());
+        store_target();
+        save_project();
+        refresh_views();
+    } catch (Exception error) {
+        refresh_views();
+        show_message(error.message);
+    }
+}
+
+void DebuggerApp::apply_ignore(void) {
+    String *number;
+    int count;
+
+    try {
+        number = new String();
+        if (break_number(cursorLine, number) == 0)
+            session->fail(
+                    "DBG1000",
+                    "no breakpoint at this line");
+        count = read_count(ignoreEntry->text());
+        if (count < 0)
+            session->fail("DBG1000", "hit count must be a number");
+        session->set_ignore(number->c_str(), count);
+        store_target();
+        save_project();
+        refresh_views();
+    } catch (Exception error) {
+        refresh_views();
+        show_message(error.message);
+    }
+}
+
+void DebuggerApp::add_watch_text(void) {
+    try {
+        session->add_watch(watchEntry->text());
+        store_target();
+        save_project();
+        refresh_views();
+    } catch (Exception error) {
+        refresh_views();
+        show_message(error.message);
+    }
+}
+
+void DebuggerApp::do_find(int next) {
+    int found;
+    int line;
+
+    if (source->kind != SOURCE_OK) {
+        show_error("DBG1000", "no source is open");
+        return;
+    }
+    if (next != 0)
+        found = source->find_next(
+                findEntry->text(),
+                source->matchAt + 1);
+    else
+        found = source->find_prev(
+                findEntry->text(),
+                source->matchAt - 1);
+    if (found == 0) {
+        statusLabel->set_text(source->note->c_str());
+        return;
+    }
+    line = source->line_of(source->matchAt);
+    cursorLine = line;
+    if (source->note->size() > 0)
+        statusLabel->set_text(source->note->c_str());
+    else
+        statusLabel->set_text("Found");
+    paint_source();
+    sourceView->scroll_to((long)line - 1, (long)0);
+}
+
+void DebuggerApp::pick_frame(long row) {
+    try {
+        if (row < 0 || row >= session->frames->size())
+            return;
+        session->select_frame(session->frames->at(row)->level);
+        refresh_views();
+    } catch (Exception error) {
+        refresh_views();
+        show_message(error.message);
+    }
+}
+
+void DebuggerApp::pick_thread(long row) {
+    try {
+        if (row < 0 || row >= session->threads->size())
+            return;
+        session->select_thread(
+                session->threads->at(row)->id->c_str());
+        refresh_views();
+    } catch (Exception error) {
+        refresh_views();
+        show_message(error.message);
+    }
+}
+
+void DebuggerApp::apply_session(void) {
+    const char *dir;
+    struct stat info;
+
+    try {
+        dir = dirEntry->text();
+        if (dir[0] != 0) {
+            if (stat(dir, &info) != 0
+                    || S_ISDIR(info.st_mode) == 0)
+                session->fail(
+                        "DBG1000",
+                        "working directory does not exist");
+        }
+        if (session->arguments->parse(argEntry->text()) == 0)
+            session->fail(
+                    "DBG1000",
+                    session->arguments->error->c_str());
+        if (session->environment->parse(
+                envBuffer->get_text()) == 0)
+            session->fail(
+                    "DBG1000",
+                    session->environment->error->c_str());
+        string_set(session->directory, dir);
+        if (prefStart->active())
+            session->breakAtStart = 1;
+        else
+            session->breakAtStart = 0;
+        argsFromCli = 0;
+        settings->breakAtStart = session->breakAtStart;
+        if (session->state != DEBUG_EMPTY
+                && session->state != DEBUG_RUNNING)
+            session->send_runtime();
+        store_target();
+        save_project();
+        if (session->state == DEBUG_RUNNING)
+            session->update_status();
+        refresh_views();
+        if (session->state == DEBUG_RUNNING)
+            statusLabel->set_text(
+                    "saved; takes effect at the next Run");
+    } catch (Exception error) {
+        refresh_views();
+        show_message(error.message);
+    }
+}
+
+void DebuggerApp::open_session_dialog(void) {
+    if (session->breakAtStart != 0)
+        prefStart->set_active(true);
+    else
+        prefStart->set_active(false);
+    argEntry->set_text(session->arguments->display()->c_str());
+    dirEntry->set_text(session->directory->c_str());
+    envBuffer->set_text(session->environment->display()->c_str());
+    sessionDialog->present();
+}
+
+void DebuggerApp::shutdown(void) {
+    try {
+        store_target();
+        save_project();
+        session->close_gdb();
+    } catch (Exception error) {
+        (void)error;
+    }
+    exit(0);
+}
+
+void DebuggerApp::present_window(void) {
+    window->present();
+    if (cliTarget->size() > 0)
+        load_target(cliTarget->c_str());
+}
+
+int DebuggerApp::build(void) {
+    Box *root;
+    Box *pathRow;
+    Box *findRow;
+    Box *watchRow;
+    Box *condRow;
+    Box *sourceColumn;
+    Box *dialogBody;
+    HeaderBar *header;
+    MenuButton *fileMenu;
+    MenuButton *breakMenu;
+    ScrolledWindow *sourceScroll;
+    ScrolledWindow *programScroll;
+    ScrolledWindow *consoleScroll;
+    Notebook *side;
+    Notebook *bottom;
+    Paned *wide;
+    Paned *tall;
+    Button *button;
+    Box *paneRow;
+    CheckButton *check;
+    TextView *plain;
+    const char *fileItems[3];
+    const char *breakItems[2];
+
+    debugger = this;
+    try {
+        settings->load(".dbg.toml");
+        application = new Application("com.smallcpp.dbg");
+        application->on_activate(on_activate, nullptr);
+        window = new Window("dbg");
+        window->set_default_size(
+                (long)settings->width,
+                (long)settings->height);
+        window->on_close_request(on_close, nullptr);
+        header = new HeaderBar();
+        header->set_title("dbg");
+        header->set_show_title_buttons(true);
+        fileItems[0] = "Load executable";
+        fileItems[1] = "Open source";
+        fileItems[2] = "Quit";
+        fileMenu = new MenuButton("File");
+        fileMenu->set_menu(fileItems, 3, on_file_menu, nullptr);
+        breakItems[0] = "Set or clear";
+        breakItems[1] = "Enable or disable";
+        breakMenu = new MenuButton("Break");
+        breakMenu->set_menu(breakItems, 2, on_break_menu, nullptr);
+        header->pack_start((Widget *)fileMenu);
+        header->pack_start((Widget *)breakMenu);
+        runButton = new Button("Run");
+        runButton->set_tooltip(
+                "Run or continue. The window waits until GDB stops.");
+        runButton->on_clicked(on_run, nullptr);
+        header->pack_start((Widget *)runButton);
+        button = new Button("Pause");
+        button->set_tooltip(
+                "Interrupt. Run waits, so this click is not taken mid-run.");
+        button->on_clicked(on_pause, nullptr);
+        header->pack_start((Widget *)button);
+        button = new Button("Into");
+        button->on_clicked(on_into, nullptr);
+        header->pack_start((Widget *)button);
+        button = new Button("Over");
+        button->on_clicked(on_over, nullptr);
+        header->pack_start((Widget *)button);
+        button = new Button("Out");
+        button->on_clicked(on_out, nullptr);
+        header->pack_start((Widget *)button);
+        button = new Button("Restart");
+        button->on_clicked(on_restart, nullptr);
+        header->pack_start((Widget *)button);
+        button = new Button("Session");
+        button->on_clicked(on_session, nullptr);
+        header->pack_end((Widget *)button);
+        root = new Box(GTK_VERTICAL, 4);
+        root->append((Widget *)header);
+        pathRow = new Box(GTK_HORIZONTAL, 4);
+        pathEntry = new Entry("");
+        pathEntry->set_h_expand(true);
+        pathRow->append((Widget *)pathEntry);
+        button = new Button("Load");
+        button->on_clicked(on_load, nullptr);
+        pathRow->append((Widget *)button);
+        startCheck = new CheckButton("Break at start");
+        if (settings->breakAtStart != 0)
+            startCheck->set_active(true);
+        startCheck->on_toggled(on_start, nullptr);
+        pathRow->append((Widget *)startCheck);
+        root->append((Widget *)pathRow);
+        paneRow = new Box(GTK_HORIZONTAL, 4);
+        root->append((Widget *)paneRow);
+        sourceColumn = new Box(GTK_VERTICAL, 4);
+        findRow = new Box(GTK_HORIZONTAL, 4);
+        findEntry = new Entry("");
+        findEntry->set_h_expand(true);
+        findRow->append((Widget *)findEntry);
+        button = new Button("Next");
+        button->on_clicked(on_find_next, nullptr);
+        findRow->append((Widget *)button);
+        button = new Button("Prev");
+        button->on_clicked(on_find_prev, nullptr);
+        findRow->append((Widget *)button);
+        sourceColumn->append((Widget *)findRow);
+        sourceBuffer = new TextBuffer();
+        sourceBuffer->create_tag("here", "#1d4e89");
+        sourceView = new TextView(sourceBuffer);
+        sourceView->set_editable(false);
+        sourceView->set_monospace(true);
+        sourceView->set_v_expand(true);
+        sourceView->on_move_cursor(on_move, nullptr);
+        sourceScroll = new ScrolledWindow();
+        sourceScroll->set_policy(
+                GTK_POLICY_AUTOMATIC,
+                GTK_POLICY_AUTOMATIC);
+        sourceScroll->set_child((Widget *)sourceView);
+        sourceScroll->set_v_expand(true);
+        sourceColumn->append((Widget *)sourceScroll);
+        side = new Notebook();
+        localView = new ColumnView();
+        localView->append_column("Name");
+        localView->append_column("Value");
+        localBox = new Box(GTK_VERTICAL, 0);
+        localBox->append((Widget *)localView);
+        side->append_page((Widget *)localBox, "Locals");
+        watchView = new ColumnView();
+        watchView->append_column("Expression");
+        watchView->append_column("Value");
+        watchRow = new Box(GTK_HORIZONTAL, 4);
+        watchEntry = new Entry("");
+        watchEntry->set_h_expand(true);
+        watchRow->append((Widget *)watchEntry);
+        button = new Button("Watch");
+        button->on_clicked(on_watch, nullptr);
+        watchRow->append((Widget *)button);
+        watchBox = new Box(GTK_VERTICAL, 4);
+        watchBox->append((Widget *)watchRow);
+        watchBox->append((Widget *)watchView);
+        side->append_page((Widget *)watchBox, "Watches");
+        stackView = new ColumnView();
+        stackView->append_column("Level");
+        stackView->append_column("Function");
+        stackView->append_column("Location");
+        stackView->on_activate(on_stack, nullptr);
+        stackBox = new Box(GTK_VERTICAL, 0);
+        stackBox->append((Widget *)stackView);
+        side->append_page((Widget *)stackBox, "Stack");
+        breakView = new ColumnView();
+        breakView->append_column("Number");
+        breakView->append_column("Where");
+        breakView->append_column("Hits");
+        condRow = new Box(GTK_HORIZONTAL, 4);
+        condEntry = new Entry("");
+        ignoreEntry = new Entry("");
+        condRow->append((Widget *)condEntry);
+        button = new Button("Condition");
+        button->on_clicked(on_condition, nullptr);
+        condRow->append((Widget *)button);
+        condRow->append((Widget *)ignoreEntry);
+        button = new Button("Ignore");
+        button->on_clicked(on_ignore, nullptr);
+        condRow->append((Widget *)button);
+        breakBox = new Box(GTK_VERTICAL, 4);
+        breakBox->append((Widget *)condRow);
+        breakBox->append((Widget *)breakView);
+        side->append_page((Widget *)breakBox, "Breaks");
+        threadView = new ColumnView();
+        threadView->append_column("Id");
+        threadView->append_column("Name");
+        threadView->on_activate(on_thread, nullptr);
+        threadBox = new Box(GTK_VERTICAL, 0);
+        threadBox->append((Widget *)threadView);
+        side->append_page((Widget *)threadBox, "Threads");
+        wide = new Paned(GTK_HORIZONTAL);
+        wide->set_start_child((Widget *)sourceColumn);
+        wide->set_end_child((Widget *)side);
+        wide->set_position((long)settings->pane);
+        bottom = new Notebook();
+        programBuffer = new TextBuffer();
+        programScroll = new ScrolledWindow();
+        plain = new TextView(programBuffer);
+        plain->set_editable(false);
+        plain->set_monospace(true);
+        programScroll->set_child((Widget *)plain);
+        outputBox = new Box(GTK_VERTICAL, 0);
+        outputBox->append((Widget *)programScroll);
+        bottom->append_page((Widget *)outputBox, "Program");
+        consoleBuffer = new TextBuffer();
+        consoleScroll = new ScrolledWindow();
+        plain = new TextView(consoleBuffer);
+        plain->set_editable(false);
+        plain->set_monospace(true);
+        consoleScroll->set_child((Widget *)plain);
+        consoleBox = new Box(GTK_VERTICAL, 0);
+        consoleBox->append((Widget *)consoleScroll);
+        bottom->append_page((Widget *)consoleBox, "Console");
+        tall = new Paned(GTK_VERTICAL);
+        tall->set_start_child((Widget *)wide);
+        tall->set_end_child((Widget *)bottom);
+        tall->set_position((long)settings->bottomSplit);
+        tall->set_v_expand(true);
+        root->append((Widget *)tall);
+        check = new CheckButton("Locals");
+        if (settings->showLocals != 0)
+            check->set_active(true);
+        else
+            localBox->set_visible(false);
+        check->on_toggled(on_local_pane, nullptr);
+        paneRow->append((Widget *)check);
+        check = new CheckButton("Watches");
+        if (settings->showWatches != 0)
+            check->set_active(true);
+        else
+            watchBox->set_visible(false);
+        check->on_toggled(on_watch_pane, nullptr);
+        paneRow->append((Widget *)check);
+        check = new CheckButton("Stack");
+        if (settings->showStack != 0)
+            check->set_active(true);
+        else
+            stackBox->set_visible(false);
+        check->on_toggled(on_stack_pane, nullptr);
+        paneRow->append((Widget *)check);
+        check = new CheckButton("Breaks");
+        if (settings->showBreaks != 0)
+            check->set_active(true);
+        else
+            breakBox->set_visible(false);
+        check->on_toggled(on_break_pane, nullptr);
+        paneRow->append((Widget *)check);
+        check = new CheckButton("Threads");
+        if (settings->showThreads != 0)
+            check->set_active(true);
+        else
+            threadBox->set_visible(false);
+        check->on_toggled(on_thread_pane, nullptr);
+        paneRow->append((Widget *)check);
+        check = new CheckButton("Output");
+        if (settings->showOutput != 0)
+            check->set_active(true);
+        else
+            outputBox->set_visible(false);
+        check->on_toggled(on_output_pane, nullptr);
+        paneRow->append((Widget *)check);
+        check = new CheckButton("Console");
+        if (settings->showConsole != 0)
+            check->set_active(true);
+        else
+            consoleBox->set_visible(false);
+        check->on_toggled(on_console_pane, nullptr);
+        paneRow->append((Widget *)check);
+        statusLabel = new Label(session->status->c_str());
+        root->append((Widget *)statusLabel);
+        window->set_child((Widget *)root);
+        sourceBuffer->set_text("No source\n");
+        loadDialog = new FileDialog();
+        loadDialog->set_title("Load executable");
+        sourceDialog = new FileDialog();
+        sourceDialog->set_title("Open source");
+        dialogBody = new Box(GTK_VERTICAL, 4);
+        prefStart = new CheckButton("Break at start");
+        dialogBody->append((Widget *)prefStart);
+        argEntry = new Entry("");
+        dialogBody->append((Widget *)new Label("Arguments"));
+        dialogBody->append((Widget *)argEntry);
+        dirEntry = new Entry("");
+        dialogBody->append((Widget *)new Label("Working directory"));
+        dialogBody->append((Widget *)dirEntry);
+        dialogBody->append((Widget *)new Label("Environment"));
+        envBuffer = new TextBuffer();
+        dialogBody->append((Widget *)new TextView(envBuffer));
+        sessionDialog = new Dialog("Session");
+        sessionDialog->set_content((Widget *)dialogBody);
+        sessionDialog->add_button("Cancel", 0);
+        sessionDialog->add_button("Apply", 1);
+        sessionDialog->on_response(on_prefs, nullptr);
+        built = 1;
+        refresh_views();
+        return 1;
+    } catch (Exception error) {
+        if (same_text(error.message, "display"))
+            return 77;
+        return 0;
+    }
+}
+
+void on_run(void *data) {
+    (void)data;
+    debugger->do_run();
+}
+
+void on_pause(void *data) {
+    (void)data;
+    debugger->do_pause();
+}
+
+void on_into(void *data) {
+    (void)data;
+    debugger->do_into();
+}
+
+void on_over(void *data) {
+    (void)data;
+    debugger->do_over();
+}
+
+void on_out(void *data) {
+    (void)data;
+    debugger->do_out();
+}
+
+void on_restart(void *data) {
+    (void)data;
+    debugger->do_restart();
+}
+
+void on_session(void *data) {
+    (void)data;
+    debugger->open_session_dialog();
+}
+
+void on_load(void *data) {
+    (void)data;
+    debugger->load_target(debugger->pathEntry->text());
+}
+
+void on_find_next(void *data) {
+    (void)data;
+    debugger->do_find(1);
+}
+
+void on_find_prev(void *data) {
+    (void)data;
+    debugger->do_find(0);
+}
+
+void on_watch(void *data) {
+    (void)data;
+    debugger->add_watch_text();
+}
+
+void on_condition(void *data) {
+    (void)data;
+    debugger->apply_condition();
+}
+
+void on_ignore(void *data) {
+    (void)data;
+    debugger->apply_ignore();
+}
+
+void on_file_menu(void *data, const char *label) {
+    (void)data;
+    if (same_text(label, "Quit"))
+        debugger->shutdown();
+    else if (same_text(label, "Open source"))
+        debugger->sourceDialog->open(on_source_pick, nullptr);
+    else
+        debugger->loadDialog->open(on_load_pick, nullptr);
+}
+
+void on_break_menu(void *data, const char *label) {
+    (void)data;
+    if (same_text(label, "Enable or disable"))
+        debugger->toggle_enabled();
+    else
+        debugger->toggle_break();
+}
+
+void on_stack(void *data, long row) {
+    (void)data;
+    debugger->pick_frame(row);
+}
+
+void on_thread(void *data, long row) {
+    (void)data;
+    debugger->pick_thread(row);
+}
+
+void on_move(void *data, long line, long offset) {
+    (void)data;
+    (void)offset;
+    if (debugger->painting != 0)
+        return;
+    debugger->cursorLine = (int)line + 1;
+}
+
+void on_prefs(void *data, int response) {
+    (void)data;
+    if (response == 1)
+        debugger->apply_session();
+}
+
+void on_load_pick(void *data, const char *path) {
+    (void)data;
+    if (path == nullptr || path[0] == 0)
+        return;
+    debugger->load_target(path);
+}
+
+void on_source_pick(void *data, const char *path) {
+    (void)data;
+    if (path == nullptr || path[0] == 0)
+        return;
+    if (debugger->open_source_file(path, 0) != 0)
+        debugger->paint_source();
+}
+
+void on_alert(void *data) {
+    (void)data;
+}
+
+bool on_close(void *data) {
+    (void)data;
+    debugger->shutdown();
+    return true;
+}
+
+void on_start(void *data, bool value) {
+    (void)data;
+    if (value)
+        debugger->session->breakAtStart = 1;
+    else
+        debugger->session->breakAtStart = 0;
+}
+
+void on_local_pane(void *data, bool value) {
+    (void)data;
+    debugger->localBox->set_visible(value);
+}
+
+void on_watch_pane(void *data, bool value) {
+    (void)data;
+    debugger->watchBox->set_visible(value);
+}
+
+void on_stack_pane(void *data, bool value) {
+    (void)data;
+    debugger->stackBox->set_visible(value);
+}
+
+void on_break_pane(void *data, bool value) {
+    (void)data;
+    debugger->breakBox->set_visible(value);
+}
+
+void on_thread_pane(void *data, bool value) {
+    (void)data;
+    debugger->threadBox->set_visible(value);
+}
+
+void on_output_pane(void *data, bool value) {
+    (void)data;
+    debugger->outputBox->set_visible(value);
+}
+
+void on_console_pane(void *data, bool value) {
+    (void)data;
+    debugger->consoleBox->set_visible(value);
+}
+
+void on_activate(void *data) {
+    (void)data;
+    debugger->present_window();
+}
+
+#endif

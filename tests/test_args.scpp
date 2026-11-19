@@ -1,0 +1,73 @@
+#include "../src/args.scpp"
+
+int main(void) {
+    ArgumentList *args;
+    EnvironmentList *env;
+    String *shown;
+
+    args = new ArgumentList();
+    if (require_test(
+            args->parse("one 'two words' '' \"a\\\"b\""),
+            "parse") == 0)
+        return 1;
+    if (require_test(args->values->size() == 4, "count") == 0)
+        return 1;
+    if (require_test(
+            same_text(args->values->at(0)->c_str(), "one"),
+            "one") == 0)
+        return 1;
+    if (require_test(
+            same_text(args->values->at(1)->c_str(), "two words"),
+            "two") == 0)
+        return 1;
+    if (require_test(
+            same_text(args->values->at(2)->c_str(), ""),
+            "empty") == 0)
+        return 1;
+    if (require_test(
+            same_text(args->values->at(3)->c_str(), "a\"b"),
+            "escaped") == 0)
+        return 1;
+    shown = args->display();
+    if (require_test(
+            args->parse(shown->c_str()),
+            "reparse") == 0)
+        return 1;
+    if (require_test(args->values->size() == 4, "recount") == 0)
+        return 1;
+    if (require_test(args->parse("unterminated 'no") == 0,
+            "open quote") == 0)
+        return 1;
+    if (require_test(
+            same_text(args->error->c_str(), "unterminated quote"),
+            "quote error") == 0)
+        return 1;
+    if (require_test(args->parse("trailing\\") == 0,
+            "slash") == 0)
+        return 1;
+    env = new EnvironmentList();
+    if (require_test(
+            env->parse("FOO=bar\n# comment\n\nBAZ=\n"),
+            "env") == 0)
+        return 1;
+    if (require_test(env->pairs->size() == 2, "pairs") == 0)
+        return 1;
+    if (require_test(
+            same_text(env->pairs->at(0)->name->c_str(), "FOO"),
+            "foo") == 0)
+        return 1;
+    if (require_test(
+            same_text(env->pairs->at(0)->value->c_str(), "bar"),
+            "bar") == 0)
+        return 1;
+    if (require_test(
+            same_text(env->pairs->at(1)->value->c_str(), ""),
+            "baz") == 0)
+        return 1;
+    if (require_test(env->parse("1BAD=x") == 0, "bad name") == 0)
+        return 1;
+    if (require_test(env->parse("=missing") == 0, "no name") == 0)
+        return 1;
+    print("args 1\n");
+    return 0;
+}

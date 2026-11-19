@@ -1,0 +1,300 @@
+#ifndef DBG_ARGS
+#define DBG_ARGS
+
+/* Inferior arguments and environment, without a shell.
+ * Blanks separate words. Single quotes are literal.
+ * Double quotes honor \", \\, \$, and \`. An unquoted
+ * backslash escapes the next character. '' and "" are
+ * empty words. Environment text is KEY=VALUE lines.
+ * Blank lines and # comments are ignored. */
+
+#include "util.scpp"
+
+class ArgumentList {
+public:
+    ArgumentList();
+    int parse(const char *text);
+    String *display(void);
+    String *error;
+    StringVec *values;
+};
+
+class EnvPair {
+public:
+    EnvPair();
+    String *name;
+    String *value;
+};
+
+VECTOR(EnvVec, EnvPair *)
+
+class EnvironmentList {
+public:
+    EnvironmentList();
+    int parse(const char *text);
+    String *display(void);
+    int name_ok(const char *name);
+    String *error;
+    EnvVec *pairs;
+};
+
+ArgumentList::ArgumentList() {
+    error = new String();
+    values = new StringVec();
+}
+
+int ArgumentList::parse(const char *text) {
+    String *current;
+    int started;
+    int quote;
+    int index;
+    int ch;
+    int next;
+
+    values = new StringVec();
+    string_set(error, "");
+    if (text == nullptr)
+        text = "";
+    current = new String();
+    started = 0;
+    quote = 0;
+    index = 0;
+    while (text[index] != 0) {
+        ch = (unsigned char)text[index];
+        index = index + 1;
+        if (quote == '\'') {
+            if (ch == '\'')
+                quote = 0;
+            else
+                current->add((char)ch);
+        } else if (quote == '"') {
+            if (ch == '"') {
+                quote = 0;
+            } else if (ch == '\\' && text[index] != 0) {
+                next = (unsigned char)text[index];
+                if (next == '"' || next == '\\'
+                        || next == '$' || next == '`') {
+                    current->add((char)next);
+                    index = index + 1;
+                } else {
+                    current->add((char)ch);
+                }
+            } else {
+                current->add((char)ch);
+            }
+        } else if (is_space(ch)) {
+            if (started != 0) {
+                values->add(string_from(current->c_str()));
+                current = new String();
+                started = 0;
+            }
+        } else {
+            started = 1;
+            if (ch == '\'' || ch == '"') {
+                quote = ch;
+            } else if (ch == '\\') {
+                if (text[index] == 0) {
+                    string_set(error, "trailing backslash");
+                    values = new StringVec();
+                    return 0;
+                }
+                current->add(text[index]);
+                index = index + 1;
+            } else {
+                current->add((char)ch);
+            }
+        }
+    }
+    if (quote != 0) {
+        string_set(error, "unterminated quote");
+        values = new StringVec();
+        return 0;
+    }
+    if (started != 0)
+        values->add(string_from(current->c_str()));
+    return 1;
+}
+
+String *ArgumentList::display(void) {
+    String *text;
+    long index;
+    const char *item;
+    int quote;
+    int cursor;
+
+    text = new String();
+    index = 0;
+    while (index < values->size()) {
+        item = values->at(index)->c_str();
+        if (index > 0)
+            text->append(" ");
+        quote = 0;
+        if (item[0] == 0)
+            quote = 1;
+        cursor = 0;
+        while (item[cursor] != 0) {
+            if (is_space(item[cursor]) || item[cursor] == '\''
+                    || item[cursor] == '"'
+                    || item[cursor] == '\\')
+                quote = 1;
+            cursor = cursor + 1;
+        }
+        if (quote == 0) {
+            text->append(item);
+        } else {
+            text->append("'");
+            cursor = 0;
+            while (item[cursor] != 0) {
+                if (item[cursor] == '\'')
+                    text->append("'\\''");
+                else
+                    text->add(item[cursor]);
+                cursor = cursor + 1;
+            }
+            text->append("'");
+        }
+        index = index + 1;
+    }
+    return text;
+}
+
+EnvPair::EnvPair() {
+    name = new String();
+    value = new String();
+}
+
+EnvironmentList::EnvironmentList() {
+    error = new String();
+    pairs = new EnvVec();
+}
+
+int EnvironmentList::name_ok(const char *name) {
+    int index;
+    int ch;
+
+    if (name == nullptr || name[0] == 0)
+        return 0;
+    if (text_length(name) > 256)
+        return 0;
+    index = 0;
+    while (name[index] != 0) {
+        ch = (unsigned char)name[index];
+        if (index == 0) {
+            if (!((ch >= 'A' && ch <= 'Z')
+                    || (ch >= 'a' && ch <= 'z')
+                    || ch == '_'))
+                return 0;
+        } else if (!((ch >= 'A' && ch <= 'Z')
+                || (ch >= 'a' && ch <= 'z')
+                || (ch >= '0' && ch <= '9')
+                || ch == '_')) {
+            return 0;
+        }
+        index = index + 1;
+    }
+    return 1;
+}
+
+int EnvironmentList::parse(const char *text) {
+    int index;
+    int start;
+    int length;
+    int eq;
+    int lineNo;
+    String *line;
+    String *name;
+    String *value;
+    EnvPair *pair;
+
+    pairs = new EnvVec();
+    string_set(error, "");
+    if (text == nullptr)
+        text = "";
+    length = text_length(text);
+    if (length > 16384) {
+        string_set(error, "environment text exceeds 16 KiB");
+        return 0;
+    }
+    index = 0;
+    lineNo = 0;
+    while (index <= length) {
+        start = index;
+        while (text[index] != 0 && text[index] != '\n')
+            index = index + 1;
+        line = new String();
+        string_add_bytes(line, text + start, index - start);
+        if (line->size() > 0 && line->at(line->size() - 1) == '\r')
+            line->truncate(line->size() - 1, line->size());
+        line->strip();
+        lineNo = lineNo + 1;
+        if (line->size() > 0 && line->at(0) != '#') {
+            eq = (int)line->find('=');
+            if (eq < 1) {
+                string_set(
+                        error,
+                        format(
+                            "expected KEY=VALUE on line {}",
+                            lineNo));
+                pairs = new EnvVec();
+                return 0;
+            }
+            name = new String();
+            string_add_bytes(name, line->c_str(), eq);
+            value = new String();
+            if (eq + 1 < (int)line->size())
+                value->append(line->c_str() + eq + 1);
+            if (name_ok(name->c_str()) == 0) {
+                string_set(
+                        error,
+                        format(
+                            "invalid environment name '{:s}'",
+                            name->c_str()));
+                pairs = new EnvVec();
+                return 0;
+            }
+            if (value->size() > 4096) {
+                string_set(
+                        error,
+                        format(
+                            "value for {:s} exceeds 4096 bytes",
+                            name->c_str()));
+                pairs = new EnvVec();
+                return 0;
+            }
+            pair = new EnvPair();
+            string_set(pair->name, name->c_str());
+            string_set(pair->value, value->c_str());
+            pairs->add(pair);
+            if (pairs->size() > 64) {
+                string_set(
+                        error,
+                        "at most 64 environment variables");
+                pairs = new EnvVec();
+                return 0;
+            }
+        }
+        if (text[index] == 0)
+            break;
+        index = index + 1;
+    }
+    return 1;
+}
+
+String *EnvironmentList::display(void) {
+    String *text;
+    long index;
+
+    text = new String();
+    index = 0;
+    while (index < pairs->size()) {
+        if (index > 0)
+            text->append("\n");
+        text->append(pairs->at(index)->name->c_str());
+        text->append("=");
+        text->append(pairs->at(index)->value->c_str());
+        index = index + 1;
+    }
+    return text;
+}
+
+#endif
