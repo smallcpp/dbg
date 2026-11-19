@@ -1,4 +1,4 @@
-#include "../src/ui.scpp"
+#include "../src/ui.shpp"
 #include <unistd>
 
 int main(int argc, char **argv) {

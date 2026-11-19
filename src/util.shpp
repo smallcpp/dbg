@@ -1,0 +1,31 @@
+#ifndef DBG_UTIL
+#define DBG_UTIL
+
+/* Shared text and path helpers for the debugger. */
+
+#include <errno>
+#include <exceptions>
+#include <stdlib>
+#include <string>
+#include <unistd>
+
+extern char **environ;
+
+int text_length(const char *text);
+int same_text(const char *left, const char *right);
+int starts_text(const char *text, const char *prefix);
+int ends_text(const char *text, const char *suffix);
+int is_digit(int value);
+int is_space(int value);
+char *text_copy(const char *text);
+void string_set(String *text, const char *value);
+void string_add_bytes(
+        String *text,
+        const char *bytes,
+        long count);
+String *string_from(const char *value);
+int bound_int(int value, int low, int high);
+String *canonical_path(const char *path);
+int require_test(int cond, const char *reason);
+
+#endif

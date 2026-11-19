@@ -1,0 +1,94 @@
+#ifndef DBG_SETTINGS
+#define DBG_SETTINGS
+
+/* Project settings in .dbg.toml. The shape matches cdbg's
+ * target tables: one ["path"] table, points, and watches.
+ * Appearance and keyboard bindings are not stored. The
+ * file is written atomically with mode 0600. A malformed
+ * file keeps its contents and disables saving. */
+
+#include <fcntl>
+#include <stdio>
+#include <stat>
+#include "args.shpp"
+
+class SavedPoint {
+public:
+    SavedPoint();
+    String *file;
+    int line;
+    int enabled;
+    String *condition;
+    int hitCount;
+};
+
+class SavedWatch {
+public:
+    SavedWatch();
+    String *expression;
+};
+
+VECTOR(PointVec, SavedPoint *)
+VECTOR(WatchVec, SavedWatch *)
+
+class SavedTarget {
+public:
+    SavedTarget();
+    String *path;
+    int hasBreak;
+    int breakAtStart;
+    String *arguments;
+    String *cwd;
+    String *envText;
+    PointVec *points;
+    WatchVec *watches;
+};
+
+VECTOR(TargetVec, SavedTarget *)
+
+class ProjectSettings {
+public:
+    ProjectSettings();
+    void reset(void);
+    int load(const char *path);
+    int save(const char *path);
+    SavedTarget *ensure(const char *path);
+    SavedTarget *find(const char *path);
+    int version;
+    int breakAtStart;
+    int width;
+    int height;
+    int maximized;
+    int pane;
+    int rightSplit;
+    int midSplit;
+    int bottomSplit;
+    int showLocals;
+    int showWatches;
+    int showStack;
+    int showBreaks;
+    int showOutput;
+    int showConsole;
+    int showRuntime;
+    int showThreads;
+    int canSave;
+    String *error;
+    TargetVec *targets;
+    void assign_top(const char *key, const char *value);
+    void assign_target(
+            SavedTarget *target,
+            const char *key,
+            const char *value);
+    int read_string(
+            const char *text,
+            int *index,
+            String *out);
+    int read_value(const char *text, String *out);
+    void add_point(SavedTarget *target, const char *text);
+    void add_watch(SavedTarget *target, const char *text);
+    void write_string(String *out, const char *text);
+    void write_bool(String *out, const char *key, int value);
+    void write_int(String *out, const char *key, int value);
+};
+
+#endif

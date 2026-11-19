@@ -1,4 +1,4 @@
-#include "../src/source.scpp"
+#include "../src/source.shpp"
 #include <stdio>
 
 int main(void) {

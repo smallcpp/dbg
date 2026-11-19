@@ -1,0 +1,118 @@
+#ifndef DBG_UI
+#define DBG_UI
+
+/* GTK window for the debugger. GDB calls are synchronous, so
+ * the window does not take clicks while a run is in progress.
+ * The source view is read-only. Breakpoint lines are marked
+ * in the text because there is no gutter widget. */
+
+#include <stat>
+#include <stdio>
+#include <stdlib>
+#include <gtk>
+#include "session.shpp"
+#include "compile.shpp"
+#include "source.shpp"
+#include "launch.shpp"
+
+using namespace Gtk;
+
+class DebuggerApp {
+public:
+    DebuggerApp();
+    int build(void);
+    void present_window(void);
+    void show_message(const char *text);
+    void show_error(const char *code, const char *text);
+    int wants_alert(const char *text);
+    void refresh_views(void);
+    void follow_stop(void);
+    void paint_source(void);
+    int same_source(DebugBreak *point);
+    int load_target(const char *path);
+    int open_source_file(const char *path, int quiet);
+    int compile_source(const char *source);
+    void restore_target(int useCli);
+    void store_target(void);
+    void save_project(void);
+    void do_run(void);
+    void do_pause(void);
+    void do_into(void);
+    void do_over(void);
+    void do_out(void);
+    void do_restart(void);
+    void toggle_break(void);
+    void toggle_enabled(void);
+    void apply_condition(void);
+    void apply_ignore(void);
+    void add_watch_text(void);
+    void do_find(int next);
+    void pick_frame(long row);
+    void pick_thread(long row);
+    void apply_session(void);
+    void open_session_dialog(void);
+    void shutdown(void);
+    int break_number(int line, String *number);
+    void hold(const char *text);
+    const char *held_text(void);
+    int is_scpp(const char *path);
+    int read_count(const char *text);
+    void fill_locals(void);
+    void fill_watches(void);
+    void fill_stack(void);
+    void fill_breaks(void);
+    void fill_threads(void);
+    DebugSession *session;
+    ProjectSettings *settings;
+    SourceText *source;
+    ProgramCompiler *compiler;
+    String *compilerPath;
+    String *gdbPath;
+    String *targetPath;
+    String *buildDir;
+    String *buildExe;
+    String *cliTarget;
+    ArgumentList *cliArgs;
+    StringVec *held;
+    int cliPending;
+    int argsFromCli;
+    int showing;
+    int painting;
+    int cursorLine;
+    int built;
+    Application *application;
+    Window *window;
+    Label *statusLabel;
+    Entry *pathEntry;
+    Entry *findEntry;
+    Entry *watchEntry;
+    Entry *condEntry;
+    Entry *ignoreEntry;
+    Entry *argEntry;
+    Entry *dirEntry;
+    TextBuffer *sourceBuffer;
+    TextView *sourceView;
+    TextBuffer *programBuffer;
+    TextBuffer *consoleBuffer;
+    TextBuffer *envBuffer;
+    ColumnView *localView;
+    ColumnView *watchView;
+    ColumnView *stackView;
+    ColumnView *breakView;
+    ColumnView *threadView;
+    CheckButton *startCheck;
+    CheckButton *prefStart;
+    Box *localBox;
+    Box *watchBox;
+    Box *stackBox;
+    Box *breakBox;
+    Box *threadBox;
+    Box *outputBox;
+    Box *consoleBox;
+    Dialog *sessionDialog;
+    FileDialog *loadDialog;
+    FileDialog *sourceDialog;
+    Button *runButton;
+};
+
+#endif
