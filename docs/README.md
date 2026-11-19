@@ -2,7 +2,7 @@
 
 This directory holds the documents for dbg.
 
-[debugger.md](debugger.md) explains what the debugger does and how to build and run it.
+[debugger.md](debugger.md) explains what the debugger does and how to build, install, and run it.
 
 [limits.md](limits.md) lists cdbg behavior that this debugger does not match.
 

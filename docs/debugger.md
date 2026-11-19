@@ -4,7 +4,7 @@
 
 There is no remote debugging, attach, LLDB, or DAP. The differences from cdbg are listed in [limits.md](limits.md).
 
-## Build and test
+## Build, test, and install
 
 Use the scripts. Do not run `cmake` yourself.
 
@@ -12,11 +12,14 @@ Use the scripts. Do not run `cmake` yourself.
 scripts/setup
 build
 build test
+install
 ../bin/dbg
 exit
 ```
 
 `scripts/setup --clean` removes the previous build before configuring. `debug` and `profile` pass `-g` to `scpp`. `build test` compiles the suite and runs it. A test that cannot open a display exits 77 and is skipped. The session test needs `gdb` on `PATH`.
+
+`install` builds `dbg` and copies `bin/dbg` into the prefix. A fresh configuration installs to `$HOME/opt/dbg`, so the program is `$HOME/opt/dbg/bin/dbg`. `install /absolute/path` and `install --prefix /absolute/path` install to that prefix for this run. From the checkout root the command is `scripts/install`. A relative prefix is rejected. Test programs are not installed. `scripts/clean` leaves the installed program in place.
 
 `DBG_COMPILER` selects the compiler. The default is `scpp` on `PATH`. `DBG_GDB` selects GDB. The default is `gdb` on `PATH`.
 
