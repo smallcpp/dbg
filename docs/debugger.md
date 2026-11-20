@@ -19,7 +19,7 @@ exit
 
 `scripts/setup --clean` removes the previous build before configuring. `debug` and `profile` pass `-g` to `scpp`. `build` compiles `bin/dbg` and leaves the test programs unbuilt. `build test` builds those programs and runs the suite. A test that cannot open a display exits 77 and is skipped. The session test needs `gdb` on `PATH`.
 
-`install` builds `dbg` and copies `bin/dbg` into the prefix. A fresh configuration installs to `$HOME/opt/dbg`, so the program is `$HOME/opt/dbg/bin/dbg`. `install /absolute/path` and `install --prefix /absolute/path` install to that prefix for this run. From the checkout root the command is `scripts/install`. A relative prefix is rejected. Test programs are not installed. `scripts/clean` leaves the installed program in place.
+`install` builds `dbg` and copies `bin/dbg` into the prefix. A fresh configuration installs to `$HOME/opt/smallcpp`, so the program is `$HOME/opt/smallcpp/bin/dbg`. `install /absolute/path` and `install --prefix /absolute/path` install to that prefix for this run. From the checkout root the command is `scripts/install`. A relative prefix is rejected. Test programs are not installed. `scripts/clean` leaves the installed program in place.
 
 `DBG_COMPILER` selects the compiler. The default is `scpp` on `PATH`. `DBG_GDB` selects GDB. The default is `gdb` on `PATH`.
 
