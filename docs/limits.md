@@ -16,7 +16,7 @@ There is no separate runtime-values pane. `show_runtime` is stored so a settings
 
 ## GDB session
 
-GDB is started as `gdb --nx --quiet --interpreter=mi2` with auto-load off, pagination off, mi-async on, confirm off, UTF-8, `may-call-functions` off, print elements 8, and print max-depth 2. Commands are synchronous. The window does not dispatch clicks while a call is waiting, so Pause cannot be pressed in the middle of Run. `interrupt` is a real MI command and the session test runs it by starting the program and then interrupting.
+GDB is started as `gdb --nx --quiet --interpreter=mi2` with auto-load off, pagination off, mi-async on, confirm off, UTF-8, `may-call-functions` off, print elements 8, and print max-depth 2. One command is in flight. User commands are a high-priority queue and may cancel a low-priority refresh. The window keeps dispatching clicks while GDB works, so Pause can send `-exec-interrupt` during Run. The session test runs that interrupt by starting the program and then interrupting.
 
 There is no pseudo-terminal. Program output is GDB's target stream and raw lines GDB does not wrap as records. The program cannot read standard input. There is no Cwhip Python pretty-printer. Values are GDB's own text. scpp does not use the Cwhip runtime.
 

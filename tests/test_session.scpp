@@ -152,6 +152,15 @@ int main(int argc, char **argv) {
             show(session);
             return 1;
         }
+        if (require_test(
+                same_text(
+                    session->fillLog->c_str(),
+                    "stack breaks threads locals"),
+                "fill order") == 0) {
+            show(session);
+            print("fill {:s}\n", session->fillLog->c_str());
+            return 1;
+        }
         session->set_condition(addBreak->c_str(), "left==4");
         session->set_ignore(addBreak->c_str(), 0);
         session->refresh_breaks();
@@ -277,6 +286,15 @@ int main(int argc, char **argv) {
             show(session);
             return 1;
         }
+        if (require_test(
+                session->can_break() == 1
+                && session->can_step() == 0
+                && session->can_run() == 0
+                && session->is_idle() == 0,
+                "pause only") == 0) {
+            show(session);
+            return 1;
+        }
         session->interrupt_program();
         if (require_test(
                 session->state == DEBUG_STOPPED,
@@ -284,8 +302,50 @@ int main(int argc, char **argv) {
             show(session);
             return 1;
         }
+        if (require_test(
+                session->can_break() == 0
+                && session->can_step() == 1
+                && same_text(
+                    session->fillLog->c_str(),
+                    "stack breaks threads locals"),
+                "pause stopped") == 0) {
+            show(session);
+            print("fill {:s}\n", session->fillLog->c_str());
+            return 1;
+        }
         if (require_test(session->threads->size() >= 1, "thread") == 0)
             return 1;
+        session->add_watch("i");
+        session->recordCommands = 1;
+        string_set(session->commandTrace, "");
+        session->queue_refresh();
+        if (require_test(
+                session->can_step() == 1
+                && session->is_idle() == 0,
+                "step during refresh") == 0) {
+            show(session);
+            return 1;
+        }
+        session->step_over();
+        if (require_test(
+                session->state == DEBUG_STOPPED
+                && session->commandTrace->find("-exec-next") >= 0
+                && session->commandTrace->find("-exec-next")
+                    > session->commandTrace->find(
+                        "-stack-list-frames")
+                && session->commandTrace->find("-thread-info")
+                    > session->commandTrace->find("-exec-next")
+                && session->commandTrace->find("-break-list")
+                    > session->commandTrace->find("-exec-next")
+                && same_text(
+                    session->fillLog->c_str(),
+                    "stack breaks threads locals watches"),
+                "cancel refresh") == 0) {
+            show(session);
+            print("trace {:s}\n", session->commandTrace->c_str());
+            print("fill {:s}\n", session->fillLog->c_str());
+            return 1;
+        }
         session->select_thread(
                 session->threads->at(0)->id->c_str());
         session->close_gdb();

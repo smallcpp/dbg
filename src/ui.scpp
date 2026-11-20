@@ -34,11 +34,13 @@ void on_thread_pane(void *data, bool value);
 void on_output_pane(void *data, bool value);
 void on_console_pane(void *data, bool value);
 void on_activate(void *data);
+void on_pump(void *data);
 
 DebuggerApp::DebuggerApp() {
     const char *env;
 
     session = new DebugSession();
+    session->yield = 1;
     settings = new ProjectSettings();
     source = new SourceText();
     compiler = new ProgramCompiler();
@@ -56,6 +58,16 @@ DebuggerApp::DebuggerApp() {
     painting = 0;
     cursorLine = 1;
     built = 0;
+    armed = 0;
+    saveOnIdle = 0;
+    pauseButton = nullptr;
+    intoButton = nullptr;
+    overButton = nullptr;
+    outButton = nullptr;
+    restartButton = nullptr;
+    loadButton = nullptr;
+    breakMenu = nullptr;
+    pulse = nullptr;
     application = nullptr;
     window = nullptr;
     statusLabel = nullptr;
@@ -378,6 +390,70 @@ void DebuggerApp::refresh_views(void) {
         startCheck->set_active(true);
     else
         startCheck->set_active(false);
+    update_controls();
+}
+
+void DebuggerApp::update_controls(void) {
+    int step;
+    int run;
+    int pause;
+
+    if (built == 0 || runButton == nullptr)
+        return;
+    step = session->can_step();
+    run = session->can_run();
+    pause = session->can_break();
+    runButton->set_sensitive(run != 0);
+    if (pauseButton != nullptr)
+        pauseButton->set_sensitive(pause != 0);
+    if (intoButton != nullptr)
+        intoButton->set_sensitive(step != 0);
+    if (overButton != nullptr)
+        overButton->set_sensitive(step != 0);
+    if (outButton != nullptr)
+        outButton->set_sensitive(step != 0);
+    if (restartButton != nullptr)
+        restartButton->set_sensitive(step != 0);
+    if (breakMenu != nullptr)
+        breakMenu->set_sensitive(session->can_edit() != 0);
+    if (loadButton != nullptr)
+        loadButton->set_sensitive(session->is_idle() != 0);
+    if (pulse == nullptr)
+        return;
+    if (session->is_idle() == 0)
+        pulse->start();
+    else
+        pulse->stop();
+    if (pause != 0) {
+        pauseButton->set_tooltip(
+                "Interrupt the running program");
+    } else {
+        pauseButton->set_tooltip(
+                "Break is available while the program runs");
+    }
+}
+
+void DebuggerApp::arm(void) {
+    if (armed != 0)
+        return;
+    if (application == nullptr || application->running == 0)
+        return;
+    if (session->is_idle() != 0 && session->strictFailed == 0)
+        return;
+    armed = 1;
+    application->post(on_pump, nullptr);
+}
+
+void DebuggerApp::after_command(void) {
+    if (session->is_idle() == 0) {
+        saveOnIdle = 1;
+        arm();
+        refresh_views();
+        return;
+    }
+    store_target();
+    save_project();
+    refresh_views();
 }
 
 int DebuggerApp::open_source_file(
@@ -594,7 +670,10 @@ void DebuggerApp::do_run(void) {
     try {
         if (session->state == DEBUG_EMPTY)
             session->fail("DBG1000", "no target is loaded");
+        if (session->can_run() == 0)
+            return;
         session->run_program();
+        arm();
         refresh_views();
     } catch (Exception error) {
         refresh_views();
@@ -604,7 +683,10 @@ void DebuggerApp::do_run(void) {
 
 void DebuggerApp::do_pause(void) {
     try {
+        if (session->can_break() == 0)
+            return;
         session->interrupt_program();
+        arm();
         refresh_views();
     } catch (Exception error) {
         refresh_views();
@@ -614,7 +696,10 @@ void DebuggerApp::do_pause(void) {
 
 void DebuggerApp::do_into(void) {
     try {
+        if (session->can_step() == 0)
+            return;
         session->step_into();
+        arm();
         refresh_views();
     } catch (Exception error) {
         refresh_views();
@@ -624,7 +709,10 @@ void DebuggerApp::do_into(void) {
 
 void DebuggerApp::do_over(void) {
     try {
+        if (session->can_step() == 0)
+            return;
         session->step_over();
+        arm();
         refresh_views();
     } catch (Exception error) {
         refresh_views();
@@ -634,7 +722,10 @@ void DebuggerApp::do_over(void) {
 
 void DebuggerApp::do_out(void) {
     try {
+        if (session->can_step() == 0)
+            return;
         session->step_out();
+        arm();
         refresh_views();
     } catch (Exception error) {
         refresh_views();
@@ -648,6 +739,8 @@ void DebuggerApp::do_restart(void) {
     try {
         if (targetPath->size() == 0)
             session->fail("DBG1000", "no target is loaded");
+        if (session->can_step() == 0)
+            return;
         if (is_scpp(targetPath->c_str()) != 0) {
             store_target();
             loaded = load_target(targetPath->c_str());
@@ -656,6 +749,7 @@ void DebuggerApp::do_restart(void) {
         } else {
             session->restart_program();
         }
+        arm();
         refresh_views();
     } catch (Exception error) {
         refresh_views();
@@ -672,15 +766,15 @@ void DebuggerApp::toggle_break(void) {
         if (source->kind != SOURCE_OK)
             session->fail("DBG1000", "no source is open");
         number = new String();
+        if (session->can_edit() == 0)
+            return;
         if (break_number(cursorLine, number) != 0)
             session->delete_breakpoint(number->c_str());
         else
             session->insert_breakpoint(
                     source->path->c_str(),
                     cursorLine);
-        store_target();
-        save_project();
-        refresh_views();
+        after_command();
     } catch (Exception error) {
         refresh_views();
         show_message(error.message);
@@ -695,6 +789,8 @@ void DebuggerApp::toggle_enabled(void) {
     try {
         if (source->kind != SOURCE_OK)
             session->fail("DBG1000", "no source is open");
+        if (session->can_edit() == 0)
+            return;
         number = new String();
         if (break_number(cursorLine, number) == 0)
             session->fail(
@@ -713,9 +809,7 @@ void DebuggerApp::toggle_enabled(void) {
             session->enable_breakpoint(number->c_str(), 0);
         else
             session->enable_breakpoint(number->c_str(), 1);
-        store_target();
-        save_project();
-        refresh_views();
+        after_command();
     } catch (Exception error) {
         refresh_views();
         show_message(error.message);
@@ -727,6 +821,8 @@ void DebuggerApp::apply_condition(void) {
 
     try {
         number = new String();
+        if (session->can_edit() == 0)
+            return;
         if (break_number(cursorLine, number) == 0)
             session->fail(
                     "DBG1000",
@@ -734,9 +830,7 @@ void DebuggerApp::apply_condition(void) {
         session->set_condition(
                 number->c_str(),
                 condEntry->text());
-        store_target();
-        save_project();
-        refresh_views();
+        after_command();
     } catch (Exception error) {
         refresh_views();
         show_message(error.message);
@@ -749,6 +843,8 @@ void DebuggerApp::apply_ignore(void) {
 
     try {
         number = new String();
+        if (session->can_edit() == 0)
+            return;
         if (break_number(cursorLine, number) == 0)
             session->fail(
                     "DBG1000",
@@ -757,9 +853,7 @@ void DebuggerApp::apply_ignore(void) {
         if (count < 0)
             session->fail("DBG1000", "hit count must be a number");
         session->set_ignore(number->c_str(), count);
-        store_target();
-        save_project();
-        refresh_views();
+        after_command();
     } catch (Exception error) {
         refresh_views();
         show_message(error.message);
@@ -769,9 +863,7 @@ void DebuggerApp::apply_ignore(void) {
 void DebuggerApp::add_watch_text(void) {
     try {
         session->add_watch(watchEntry->text());
-        store_target();
-        save_project();
-        refresh_views();
+        after_command();
     } catch (Exception error) {
         refresh_views();
         show_message(error.message);
@@ -812,7 +904,10 @@ void DebuggerApp::pick_frame(long row) {
     try {
         if (row < 0 || row >= session->frames->size())
             return;
+        if (session->can_step() == 0)
+            return;
         session->select_frame(session->frames->at(row)->level);
+        arm();
         refresh_views();
     } catch (Exception error) {
         refresh_views();
@@ -824,8 +919,11 @@ void DebuggerApp::pick_thread(long row) {
     try {
         if (row < 0 || row >= session->threads->size())
             return;
+        if (session->can_step() == 0)
+            return;
         session->select_thread(
                 session->threads->at(row)->id->c_str());
+        arm();
         refresh_views();
     } catch (Exception error) {
         refresh_views();
@@ -863,13 +961,18 @@ void DebuggerApp::apply_session(void) {
         argsFromCli = 0;
         settings->breakAtStart = session->breakAtStart;
         if (session->state != DEBUG_EMPTY
-                && session->state != DEBUG_RUNNING)
-            session->send_runtime();
+                && session->state != DEBUG_RUNNING) {
+            if (session->is_idle() != 0)
+                session->send_runtime();
+            else
+                session->enqueue_runtime();
+        }
         store_target();
         save_project();
         if (session->state == DEBUG_RUNNING)
             session->update_status();
         refresh_views();
+        arm();
         if (session->state == DEBUG_RUNNING)
             statusLabel->set_text(
                     "saved; takes effect at the next Run");
@@ -958,26 +1061,30 @@ int DebuggerApp::build(void) {
         header->pack_start((Widget *)breakMenu);
         runButton = new Button("Run");
         runButton->set_tooltip(
-                "Run or continue. The window waits until GDB stops.");
+                "Start the program, or continue if it is stopped");
         runButton->on_clicked(on_run, nullptr);
         header->pack_start((Widget *)runButton);
-        button = new Button("Pause");
-        button->set_tooltip(
-                "Interrupt. Run waits, so this click is not taken mid-run.");
-        button->on_clicked(on_pause, nullptr);
-        header->pack_start((Widget *)button);
-        button = new Button("Into");
-        button->on_clicked(on_into, nullptr);
-        header->pack_start((Widget *)button);
-        button = new Button("Over");
-        button->on_clicked(on_over, nullptr);
-        header->pack_start((Widget *)button);
-        button = new Button("Out");
-        button->on_clicked(on_out, nullptr);
-        header->pack_start((Widget *)button);
-        button = new Button("Restart");
-        button->on_clicked(on_restart, nullptr);
-        header->pack_start((Widget *)button);
+        pulse = new Spinner();
+        pulse->set_tooltip(
+                "Busy while GDB runs or refreshes the panes");
+        header->pack_start((Widget *)pulse);
+        pauseButton = new Button("Pause");
+        pauseButton->set_tooltip(
+                "Break is available while the program runs");
+        pauseButton->on_clicked(on_pause, nullptr);
+        header->pack_start((Widget *)pauseButton);
+        intoButton = new Button("Into");
+        intoButton->on_clicked(on_into, nullptr);
+        header->pack_start((Widget *)intoButton);
+        overButton = new Button("Over");
+        overButton->on_clicked(on_over, nullptr);
+        header->pack_start((Widget *)overButton);
+        outButton = new Button("Out");
+        outButton->on_clicked(on_out, nullptr);
+        header->pack_start((Widget *)outButton);
+        restartButton = new Button("Restart");
+        restartButton->on_clicked(on_restart, nullptr);
+        header->pack_start((Widget *)restartButton);
         button = new Button("Session");
         button->on_clicked(on_session, nullptr);
         header->pack_end((Widget *)button);
@@ -987,9 +1094,9 @@ int DebuggerApp::build(void) {
         pathEntry = new Entry("");
         pathEntry->set_h_expand(true);
         pathRow->append((Widget *)pathEntry);
-        button = new Button("Load");
-        button->on_clicked(on_load, nullptr);
-        pathRow->append((Widget *)button);
+        loadButton = new Button("Load");
+        loadButton->on_clicked(on_load, nullptr);
+        pathRow->append((Widget *)loadButton);
         startCheck = new CheckButton("Break at start");
         if (settings->breakAtStart != 0)
             startCheck->set_active(true);
@@ -1190,6 +1297,36 @@ int DebuggerApp::build(void) {
             return 77;
         return 0;
     }
+}
+
+void on_pump(void *data) {
+    (void)data;
+    debugger->armed = 0;
+    try {
+        debugger->session->service(40);
+    } catch (Exception error) {
+        debugger->refresh_views();
+        debugger->show_message(error.message);
+        if (debugger->session->gdbDead == 0
+                && debugger->session->fromGdb >= 0)
+            debugger->arm();
+        return;
+    }
+    debugger->refresh_views();
+    if (debugger->session->strictFailed != 0) {
+        debugger->show_error(
+                "DBG3002",
+                debugger->session->commandError->c_str());
+        debugger->session->strictFailed = 0;
+        string_set(debugger->session->commandError, "");
+    }
+    if (debugger->saveOnIdle != 0
+            && debugger->session->is_idle() != 0) {
+        debugger->saveOnIdle = 0;
+        debugger->store_target();
+        debugger->save_project();
+    }
+    debugger->arm();
 }
 
 void on_run(void *data) {
