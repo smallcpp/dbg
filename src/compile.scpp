@@ -1,28 +1,4 @@
-#ifndef DBG_COMPILE
-#define DBG_COMPILE
-
-/* Compile one scpp file with `scpp -g`. The compiler is a
- * program name or path. Output and diagnostics are captured
- * from the compiler pipes. A non-zero status is a failure. */
-
-#include <errno>
-#include <spawn>
-#include <select>
-#include <unistd>
-#include "util.scpp"
-
-class ProgramCompiler {
-public:
-    ProgramCompiler();
-    int compile(
-            const char *compiler,
-            const char *source,
-            const char *output);
-    String *log;
-    int status;
-    void read_pipe(int fd, String *into);
-    int wait_child(int pid, int fd);
-};
+#include "compile.shpp"
 
 ProgramCompiler::ProgramCompiler() {
     log = new String();
@@ -139,5 +115,3 @@ int ProgramCompiler::compile(
         return 0;
     return 1;
 }
-
-#endif

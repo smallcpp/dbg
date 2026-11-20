@@ -1,5 +1,5 @@
-#include "../src/session.scpp"
-#include "../src/compile.scpp"
+#include "../src/session.shpp"
+#include "../src/compile.shpp"
 #include <stdio>
 #include <stdlib>
 

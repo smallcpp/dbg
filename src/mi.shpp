@@ -1,0 +1,51 @@
+#ifndef DBG_MI
+#define DBG_MI
+
+/* GDB/MI record parser and quoter. One record is one line.
+ * Tuples, lists, C-string escapes, and a numeric token are
+ * kept. A bkpt result may be followed by unlabelled child
+ * locations; those are stored on that breakpoint. */
+
+#include "util.shpp"
+
+class MiValue;
+
+VECTOR(MiValueVec, MiValue *)
+
+class MiValue {
+public:
+    MiValue();
+    void set_text(const char *value);
+    const char *text(void);
+    void add(const char *key, MiValue *child);
+    MiValue *field(const char *key);
+    long count(void);
+    MiValue *at(long index);
+    const char *key_at(long index);
+    String *body;
+    StringVec *keys;
+    MiValueVec *kids;
+};
+
+class MiParser {
+public:
+    MiParser();
+    int parse(const char *line);
+    String *quote(const char *text);
+    int valid;
+    String *token;
+    String *kind;
+    String *result;
+    MiValue *data;
+    const char *input;
+    long offset;
+    long length;
+    int peek(void);
+    int take(int expected);
+    String *word(void);
+    String *quoted(void);
+    MiValue *value(int depth);
+    void add_location(MiValue *child);
+};
+
+#endif

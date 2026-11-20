@@ -1,15 +1,4 @@
-#ifndef DBG_UTIL
-#define DBG_UTIL
-
-/* Shared text and path helpers for the debugger. */
-
-#include <errno>
-#include <exceptions>
-#include <stdlib>
-#include <string>
-#include <unistd>
-
-extern char **environ;
+#include "util.shpp"
 
 int text_length(const char *text) {
     int count;
@@ -163,5 +152,3 @@ int require_test(int cond, const char *reason) {
     print("fail {:s}\n", reason);
     return 0;
 }
-
-#endif

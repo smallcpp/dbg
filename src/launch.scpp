@@ -1,33 +1,4 @@
-#ifndef DBG_LAUNCH
-#define DBG_LAUNCH
-
-/* Command line for dbg. --help prints usage. One target
- * is allowed before --. Arguments after -- belong to the
- * inferior. A missing target file is reported before GTK. */
-
-#include <stat>
-#include <stdio>
-#include "args.scpp"
-
-enum {
-    LAUNCH_OPEN,
-    LAUNCH_HELP,
-    LAUNCH_USAGE,
-    LAUNCH_MISSING
-};
-
-class LaunchRequest {
-public:
-    LaunchRequest();
-    void parse(int argc, char **argv);
-    void usage(const char *text);
-    void missing(const char *path);
-    int is_file(const char *path);
-    int action;
-    String *target;
-    String *message;
-    ArgumentList *arguments;
-};
+#include "launch.shpp"
 
 LaunchRequest::LaunchRequest() {
     action = LAUNCH_OPEN;
@@ -118,5 +89,3 @@ void LaunchRequest::parse(int argc, char **argv) {
     if (target->size() > 0 && is_file(target->c_str()) == 0)
         missing(target->c_str());
 }
-
-#endif

@@ -1,42 +1,4 @@
-#ifndef DBG_ARGS
-#define DBG_ARGS
-
-/* Inferior arguments and environment, without a shell.
- * Blanks separate words. Single quotes are literal.
- * Double quotes honor \", \\, \$, and \`. An unquoted
- * backslash escapes the next character. '' and "" are
- * empty words. Environment text is KEY=VALUE lines.
- * Blank lines and # comments are ignored. */
-
-#include "util.scpp"
-
-class ArgumentList {
-public:
-    ArgumentList();
-    int parse(const char *text);
-    String *display(void);
-    String *error;
-    StringVec *values;
-};
-
-class EnvPair {
-public:
-    EnvPair();
-    String *name;
-    String *value;
-};
-
-VECTOR(EnvVec, EnvPair *)
-
-class EnvironmentList {
-public:
-    EnvironmentList();
-    int parse(const char *text);
-    String *display(void);
-    int name_ok(const char *name);
-    String *error;
-    EnvVec *pairs;
-};
+#include "args.shpp"
 
 ArgumentList::ArgumentList() {
     error = new String();
@@ -296,5 +258,3 @@ String *EnvironmentList::display(void) {
     }
     return text;
 }
-
-#endif

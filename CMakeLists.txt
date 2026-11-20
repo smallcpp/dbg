@@ -48,6 +48,21 @@ if(NOT SCPP)
         "Install smallcpp and run scripts/setup again.")
 endif()
 
+# <string> and <vector> define their methods in every translation
+# unit that includes them. The copies match. scpp does not accept a
+# linker flag, so this wrapper is the Clang scpp links with, plus
+# --allow-multiple-definition, and the link keeps one copy.
+find_program(DBG_CLANGXX NAMES clang++ HINTS /usr/lib/llvm-22/bin)
+if(NOT DBG_CLANGXX)
+    message(FATAL_ERROR "clang++ was not found")
+endif()
+set(DBG_LINK_CLANG "${CMAKE_BINARY_DIR}/link-clang")
+file(WRITE "${DBG_LINK_CLANG}"
+"#!/bin/sh
+exec \"${DBG_CLANGXX}\" -Wl,--allow-multiple-definition \"$@\"
+")
+execute_process(COMMAND chmod +x "${DBG_LINK_CLANG}")
+
 set(SCPP_FLAGS "")
 if(CMAKE_BUILD_TYPE STREQUAL "Debug"
         OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
@@ -72,32 +87,92 @@ foreach(lib IN LISTS DBG_GTK_LIBS)
     list(APPEND DBG_LINK -l "${lib}")
 endforeach()
 
-set(DBG_SOURCES
-    "${CMAKE_SOURCE_DIR}/src/dbg.scpp"
-    "${CMAKE_SOURCE_DIR}/src/ui.scpp"
-    "${CMAKE_SOURCE_DIR}/src/launch.scpp"
-    "${CMAKE_SOURCE_DIR}/src/session.scpp"
-    "${CMAKE_SOURCE_DIR}/src/compile.scpp"
-    "${CMAKE_SOURCE_DIR}/src/source.scpp"
-    "${CMAKE_SOURCE_DIR}/src/settings.scpp"
-    "${CMAKE_SOURCE_DIR}/src/args.scpp"
-    "${CMAKE_SOURCE_DIR}/src/mi.scpp"
-    "${CMAKE_SOURCE_DIR}/src/util.scpp")
+set(DBG_HEADERS
+    src/util.shpp
+    src/args.shpp
+    src/mi.shpp
+    src/settings.shpp
+    src/source.shpp
+    src/compile.shpp
+    src/launch.shpp
+    src/session.shpp
+    src/ui.shpp)
+
+# Each list is one link. A later list repeats an earlier one only
+# by naming the whole group, so a .scpp is never passed twice.
+set(DBG_UTIL src/util.scpp)
+set(DBG_ARGS src/args.scpp ${DBG_UTIL})
+set(DBG_MI src/mi.scpp ${DBG_UTIL})
+set(DBG_SETTINGS src/settings.scpp ${DBG_ARGS})
+set(DBG_SOURCE src/source.scpp ${DBG_UTIL})
+set(DBG_COMPILE src/compile.scpp ${DBG_UTIL})
+set(DBG_LAUNCH src/launch.scpp ${DBG_ARGS})
+set(DBG_SESSION
+    src/session.scpp
+    src/mi.scpp
+    src/settings.scpp
+    src/args.scpp
+    src/util.scpp)
+set(DBG_APP
+    src/ui.scpp
+    src/launch.scpp
+    src/session.scpp
+    src/compile.scpp
+    src/source.scpp
+    src/settings.scpp
+    src/args.scpp
+    src/mi.scpp
+    src/util.scpp)
+set(DBG_PROGRAM_SOURCES src/dbg.scpp ${DBG_APP})
 
 set(DBG_PROGRAM "${CMAKE_SOURCE_DIR}/bin/dbg")
 
-add_custom_command(
-    OUTPUT "${DBG_PROGRAM}"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_SOURCE_DIR}/bin"
-    COMMAND "${SCPP}" ${SCPP_FLAGS} ${DBG_LINK}
-        -o "${DBG_PROGRAM}"
-        "${CMAKE_SOURCE_DIR}/src/dbg.scpp"
-    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    DEPENDS ${DBG_SOURCES} "${SCPP}"
-    COMMENT "Compiling src/dbg.scpp"
-    VERBATIM)
-add_custom_target(dbg ALL DEPENDS "${DBG_PROGRAM}")
+# sources is one semicolon list. Extra arguments are scpp link flags.
+# The dbg target is the only one in the default build.
+function(add_scpp_program target output sources)
+    set(inputs "")
+    set(depends "${SCPP}" "${DBG_LINK_CLANG}")
+    foreach(rel IN LISTS sources)
+        if(NOT rel MATCHES "\\.")
+            message(FATAL_ERROR "source path is not a file: '${rel}'")
+        endif()
+        if("${CMAKE_SOURCE_DIR}/${rel}" IN_LIST inputs)
+            message(FATAL_ERROR "duplicate source: ${rel}")
+        endif()
+        list(APPEND inputs "${CMAKE_SOURCE_DIR}/${rel}")
+        list(APPEND depends "${CMAKE_SOURCE_DIR}/${rel}")
+    endforeach()
+    foreach(rel IN LISTS DBG_HEADERS)
+        list(APPEND depends "${CMAKE_SOURCE_DIR}/${rel}")
+    endforeach()
+    # scpp names each object from the source base name. Parallel
+    # targets share sources, so each link uses its own directory.
+    # Make creates that directory before the recipe, so it has to
+    # exist at configure time.
+    set(work "${CMAKE_BINARY_DIR}/work-${target}")
+    file(MAKE_DIRECTORY "${work}")
+    add_custom_command(
+        OUTPUT "${output}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${CMAKE_SOURCE_DIR}/bin"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${work}"
+        COMMAND "${CMAKE_COMMAND}" -E env
+            "SMALLCPP_CLANGXX=${DBG_LINK_CLANG}"
+            "${SCPP}" ${SCPP_FLAGS} ${ARGN}
+            -o "${output}"
+            ${inputs}
+        WORKING_DIRECTORY "${work}"
+        DEPENDS ${depends}
+        COMMENT "Compiling ${target}"
+        VERBATIM)
+    if(target STREQUAL "dbg")
+        add_custom_target(${target} ALL DEPENDS "${output}")
+    else()
+        add_custom_target(${target} DEPENDS "${output}")
+    endif()
+endfunction()
+
+add_scpp_program(dbg "${DBG_PROGRAM}" "${DBG_PROGRAM_SOURCES}" ${DBG_LINK})
 
 # Copy the built application. This checkout is not the compiler, so the
 # install does not write a config file. LIBDIR is set first because this
@@ -110,33 +185,23 @@ include(GNUInstallDirs)
 install(PROGRAMS "${DBG_PROGRAM}"
     DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
-function(add_scpp_test name source)
-    set(program "${CMAKE_SOURCE_DIR}/bin/${name}")
-    add_custom_command(
-        OUTPUT "${program}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-            "${CMAKE_SOURCE_DIR}/bin"
-        COMMAND "${SCPP}" ${SCPP_FLAGS} ${ARGN}
-            -o "${program}"
-            "${CMAKE_SOURCE_DIR}/tests/${source}"
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-        DEPENDS
-            "${CMAKE_SOURCE_DIR}/tests/${source}"
-            ${DBG_SOURCES}
-            "${SCPP}"
-        COMMENT "Compiling tests/${source}"
-        VERBATIM)
-    add_custom_target(${name} DEPENDS "${program}")
-endfunction()
-
-add_scpp_test(test_mi test_mi.scpp)
-add_scpp_test(test_args test_args.scpp)
-add_scpp_test(test_settings test_settings.scpp)
-add_scpp_test(test_source test_source.scpp)
-add_scpp_test(test_open test_open.scpp)
-add_scpp_test(test_session test_session.scpp)
-add_scpp_test(test_launch test_launch.scpp)
-add_scpp_test(test_ui test_ui.scpp ${DBG_LINK})
+add_scpp_program(test_mi "${CMAKE_SOURCE_DIR}/bin/test_mi"
+    "tests/test_mi.scpp;${DBG_MI}")
+add_scpp_program(test_args "${CMAKE_SOURCE_DIR}/bin/test_args"
+    "tests/test_args.scpp;${DBG_ARGS}")
+add_scpp_program(test_settings "${CMAKE_SOURCE_DIR}/bin/test_settings"
+    "tests/test_settings.scpp;${DBG_SETTINGS}")
+add_scpp_program(test_source "${CMAKE_SOURCE_DIR}/bin/test_source"
+    "tests/test_source.scpp;${DBG_SOURCE}")
+add_scpp_program(test_open "${CMAKE_SOURCE_DIR}/bin/test_open"
+    "tests/test_open.scpp;${DBG_SESSION}")
+add_scpp_program(test_session "${CMAKE_SOURCE_DIR}/bin/test_session"
+    "tests/test_session.scpp;${DBG_SESSION};src/compile.scpp")
+add_scpp_program(test_launch "${CMAKE_SOURCE_DIR}/bin/test_launch"
+    "tests/test_launch.scpp;${DBG_LAUNCH}")
+add_scpp_program(test_ui "${CMAKE_SOURCE_DIR}/bin/test_ui"
+    "tests/test_ui.scpp;${DBG_APP}"
+    ${DBG_LINK})
 
 add_subdirectory(tests)
 

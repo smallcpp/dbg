@@ -1,38 +1,4 @@
-#ifndef DBG_SOURCE
-#define DBG_SOURCE
-
-/* Read a source file and search it. ELF, NUL bytes, and
- * invalid UTF-8 are rejected. Find wraps and reports that. */
-
-#include <stdio>
-#include <stat>
-#include "util.scpp"
-
-enum {
-    SOURCE_OK,
-    SOURCE_MISSING,
-    SOURCE_BINARY,
-    SOURCE_ELF,
-    SOURCE_UTF8,
-    SOURCE_LARGE
-};
-
-class SourceText {
-public:
-    SourceText();
-    int load(const char *file);
-    int find_next(const char *needle, long from);
-    int find_prev(const char *needle, long from);
-    String *render(int current, int *breaks, int breakCount);
-    int utf8_ok(const char *bytes, long count);
-    int line_of(long index);
-    String *path;
-    String *body;
-    String *error;
-    String *note;
-    int kind;
-    long matchAt;
-};
+#include "source.shpp"
 
 SourceText::SourceText() {
     path = new String();
@@ -314,5 +280,3 @@ String *SourceText::render(
     }
     return view;
 }
-
-#endif
