@@ -46,6 +46,16 @@ HitSnap::HitSnap() {
     enabled = 1;
 }
 
+DebugJob::DebugJob() {
+    text = new String();
+    purpose = PURPOSE_NONE;
+    rank = RANK_LOW;
+    kind = JOB_QUERY;
+    follow = FOLLOW_NONE;
+    soft = 0;
+    extra = 0;
+}
+
 DebugSession::DebugSession() {
     state = DEBUG_EMPTY;
     breakAtStart = 1;
@@ -103,6 +113,21 @@ DebugSession::DebugSession() {
     gdbPid = 0;
     inferiorPid = 0;
     gdbDead = 0;
+    yield = 0;
+    stepping = FOLLOW_NONE;
+    hops = 0;
+    hopLine = 0;
+    recordCommands = 0;
+    seenResult = 0;
+    seenStop = 0;
+    seenExit = 0;
+    sawExec = 0;
+    hopFile = new String();
+    hopFunc = new String();
+    fillLog = new String();
+    commandTrace = new String();
+    commandError = new String();
+    reset_driver();
     string_set(status, "No target");
 }
 
@@ -176,6 +201,10 @@ void DebugSession::issue(const char *command, int purpose) {
     waitingToken = waitingToken + 1;
     waitingPurpose = purpose;
     lastOk = 0;
+    if (recordCommands != 0) {
+        commandTrace->append(command);
+        commandTrace->append("\n");
+    }
     line = new String();
     line->append(format("{}", waitingToken));
     line->append(command);
@@ -531,6 +560,7 @@ void DebugSession::close_gdb(void) {
     int got;
     int spins;
 
+    reset_driver();
     if (toGdb >= 0) {
         write(toGdb, (const void *)"-gdb-exit\n", 10);
         close(toGdb);
@@ -685,6 +715,11 @@ void DebugSession::insert_breakpoint(const char *file, int line) {
     command = new String();
     command->append("-break-insert ");
     command->append(quoted->c_str());
+    if (defer_job(
+            command->c_str(),
+            PURPOSE_BREAK_CMD,
+            0) != 0)
+        return;
     transact(command->c_str(), PURPOSE_BREAKS);
     string_set(
             lastNumber,
@@ -698,6 +733,11 @@ void DebugSession::delete_breakpoint(const char *number) {
     command = new String();
     command->append("-break-delete ");
     command->append(number);
+    if (defer_job(
+            command->c_str(),
+            PURPOSE_BREAK_CMD,
+            0) != 0)
+        return;
     transact(command->c_str(), PURPOSE_BREAKS);
     refresh_breaks();
 }
@@ -713,6 +753,11 @@ void DebugSession::enable_breakpoint(
     else
         command->append("-break-disable ");
     command->append(number);
+    if (defer_job(
+            command->c_str(),
+            PURPOSE_BREAK_CMD,
+            0) != 0)
+        return;
     transact(command->c_str(), PURPOSE_BREAKS);
     refresh_breaks();
 }
@@ -731,6 +776,11 @@ void DebugSession::set_condition(
         quoted = parser->quote(expr);
         command->append(quoted->c_str());
     }
+    if (defer_job(
+            command->c_str(),
+            PURPOSE_BREAK_CMD,
+            0) != 0)
+        return;
     transact(command->c_str(), PURPOSE_BREAKS);
     refresh_breaks();
 }
@@ -745,6 +795,11 @@ void DebugSession::set_ignore(const char *number, int count) {
     command->append(number);
     command->append(" ");
     command->append(format("{}", count));
+    if (defer_job(
+            command->c_str(),
+            PURPOSE_BREAK_CMD,
+            0) != 0)
+        return;
     transact(command->c_str(), PURPOSE_BREAKS);
     refresh_breaks();
 }
@@ -950,8 +1005,13 @@ void DebugSession::add_watch(const char *expr) {
         expr = "";
     string_set(watch->expression, expr);
     watches->add(watch);
-    if (state == DEBUG_STOPPED)
-        refresh_watches();
+    if (state != DEBUG_STOPPED)
+        return;
+    if (should_queue() != 0) {
+        submit_watch((int)watches->size() - 1, RANK_HIGH);
+        return;
+    }
+    refresh_watches();
 }
 
 void DebugSession::remove_watch(long index) {
@@ -968,6 +1028,11 @@ void DebugSession::select_frame(int level) {
     command = new String();
     command->append("-stack-select-frame ");
     command->append(format("{}", level));
+    if (defer_job(
+            command->c_str(),
+            PURPOSE_FRAME,
+            level) != 0)
+        return;
     transact(command->c_str(), PURPOSE_OTHER);
     selectedFrame = level;
     refresh_locals();
@@ -990,6 +1055,11 @@ void DebugSession::select_thread(const char *id) {
     command = new String();
     command->append("-thread-select ");
     command->append(id);
+    if (defer_job(
+            command->c_str(),
+            PURPOSE_THREAD,
+            0) != 0)
+        return;
     transact(command->c_str(), PURPOSE_OTHER);
     selectedFrame = 0;
     refresh_stack();
@@ -1024,6 +1094,13 @@ void DebugSession::snapshot_hits(void) {
 }
 
 void DebugSession::report_unreached(void) {
+    if (try_transact("-break-list", PURPOSE_BREAKS) == 0)
+        return;
+    apply_breaks();
+    count_unreached();
+}
+
+void DebugSession::count_unreached(void) {
     HitSnap *snap;
     DebugBreak *point;
     long index;
@@ -1031,9 +1108,6 @@ void DebugSession::report_unreached(void) {
     int found;
 
     missedCount = 0;
-    if (try_transact("-break-list", PURPOSE_BREAKS) == 0)
-        return;
-    apply_breaks();
     index = 0;
     while (index < snaps->size()) {
         snap = snaps->at(index);
@@ -1135,181 +1209,905 @@ void DebugSession::update_status(void) {
     }
 }
 
-void DebugSession::begin_run(void) {
-    String *command;
+void DebugSession::reset_driver(void) {
+    highQ = new JobVec();
+    lowQ = new JobVec();
+    active = nullptr;
+    phase = PHASE_IDLE;
+    ignoreActive = 0;
+    strictFailed = 0;
+}
 
-    if (state == DEBUG_EMPTY)
-        fail("DBG1000", "no target is loaded");
+void DebugSession::reset_error(void) {
+    strictFailed = 0;
+    string_set(commandError, "");
+}
+
+void DebugSession::flush_low(void) {
+    lowQ = new JobVec();
+    if (active != nullptr && active->rank == RANK_LOW)
+        ignoreActive = 1;
+}
+
+int DebugSession::is_idle(void) {
+    if (phase != PHASE_IDLE)
+        return 0;
+    if (active != nullptr)
+        return 0;
+    if (highQ->size() > 0)
+        return 0;
+    if (lowQ->size() > 0)
+        return 0;
+    return 1;
+}
+
+int DebugSession::accepts_user(void) {
+    if (highQ->size() > 0)
+        return 0;
+    if (phase == PHASE_STOP)
+        return 1;
+    if (active != nullptr
+            && active->rank == RANK_HIGH
+            && ignoreActive == 0)
+        return 0;
+    return 1;
+}
+
+int DebugSession::can_step(void) {
+    if (state != DEBUG_STOPPED)
+        return 0;
+    return accepts_user();
+}
+
+int DebugSession::can_run(void) {
+    if (accepts_user() == 0)
+        return 0;
+    if (state == DEBUG_LOADED || state == DEBUG_EXITED)
+        return 1;
+    if (state == DEBUG_STOPPED)
+        return 1;
+    return 0;
+}
+
+int DebugSession::can_break(void) {
     if (state == DEBUG_RUNNING)
-        fail("DBG1000", "the program is already running");
-    snapshot_hits();
+        return 1;
+    return 0;
+}
+
+int DebugSession::can_edit(void) {
+    if (state == DEBUG_EMPTY || state == DEBUG_RUNNING)
+        return 0;
+    return accepts_user();
+}
+
+int DebugSession::should_queue(void) {
+    if (yield == 0)
+        return 0;
+    if (is_idle() != 0)
+        return 0;
+    return 1;
+}
+
+int DebugSession::defer_job(
+        const char *command,
+        int purpose,
+        int extra) {
+    if (should_queue() == 0)
+        return 0;
+    reset_error();
+    submit(
+            command,
+            purpose,
+            RANK_HIGH,
+            JOB_QUERY,
+            FOLLOW_NONE,
+            0,
+            extra);
+    return 1;
+}
+
+DebugJob *DebugSession::make_job(
+        const char *text,
+        int purpose,
+        int rank,
+        int kind,
+        int follow,
+        int soft,
+        int extra) {
+    DebugJob *job;
+
+    job = new DebugJob();
+    if (text == nullptr)
+        text = "";
+    string_set(job->text, text);
+    job->purpose = purpose;
+    job->rank = rank;
+    job->kind = kind;
+    job->follow = follow;
+    job->soft = soft;
+    job->extra = extra;
+    return job;
+}
+
+int DebugSession::queued_low(const char *text) {
+    long index;
+
+    if (text == nullptr)
+        return 1;
+    if (active != nullptr
+            && ignoreActive == 0
+            && active->rank == RANK_LOW
+            && same_text(active->text->c_str(), text))
+        return 1;
+    index = 0;
+    while (index < lowQ->size()) {
+        if (same_text(lowQ->at(index)->text->c_str(), text))
+            return 1;
+        index = index + 1;
+    }
+    return 0;
+}
+
+void DebugSession::submit(
+        const char *text,
+        int purpose,
+        int rank,
+        int kind,
+        int follow,
+        int soft,
+        int extra) {
+    DebugJob *job;
+
+    if (text == nullptr || text[0] == 0)
+        return;
+    if (rank == RANK_LOW && queued_low(text) != 0)
+        return;
+    job = make_job(
+            text,
+            purpose,
+            rank,
+            kind,
+            follow,
+            soft,
+            extra);
+    if (rank == RANK_HIGH)
+        highQ->add(job);
+    else
+        lowQ->add(job);
+    if (phase == PHASE_IDLE && active == nullptr)
+        dispatch();
+}
+
+void DebugSession::dispatch(void) {
+    DebugJob *job;
+
+    if (phase != PHASE_IDLE || active != nullptr)
+        return;
+    if (strictFailed != 0)
+        return;
+    if (highQ->size() > 0) {
+        job = highQ->at(0);
+        highQ->remove(0);
+    } else if (lowQ->size() > 0) {
+        job = lowQ->at(0);
+        lowQ->remove(0);
+    } else {
+        return;
+    }
+    active = job;
+    seenResult = resultSerial;
+    seenStop = stopSerial;
+    seenExit = exitSerial;
+    issue(job->text->c_str(), job->purpose);
+    phase = PHASE_RESULT;
+}
+
+void DebugSession::note_stage(const char *name) {
+    if (name == nullptr || name[0] == 0)
+        return;
+    if (fillLog->find(name) >= 0)
+        return;
+    if (fillLog->size() > 0)
+        fillLog->append(" ");
+    fillLog->append(name);
+}
+
+void DebugSession::take_snap(void) {
+    HitSnap *snap;
+    long index;
+
+    snaps = new SnapVec();
+    index = 0;
+    while (index < breaks->size()) {
+        snap = new HitSnap();
+        string_set(
+                snap->number,
+                breaks->at(index)->number->c_str());
+        snap->hits = breaks->at(index)->hits;
+        snap->enabled = breaks->at(index)->enabled;
+        snaps->add(snap);
+        index = index + 1;
+    }
+}
+
+int DebugSession::stop_readable(void) {
+    if (stopFull->size() == 0)
+        return 0;
+    if (access(stopFull->c_str(), R_OK) != 0)
+        return 0;
+    return 1;
+}
+
+int DebugSession::hop_over(void) {
+    if (stepping != FOLLOW_OVER)
+        return 0;
+    if (hops >= 8)
+        return 0;
+    if (state != DEBUG_STOPPED)
+        return 0;
+    if (same_text(
+            stopReason->c_str(),
+            "end-stepping-range") == 0)
+        return 0;
+    if (stopLine != hopLine)
+        return 0;
+    if (same_text(stopFile->c_str(), hopFile->c_str()) == 0)
+        return 0;
+    if (same_text(stopFunc->c_str(), hopFunc->c_str()) == 0)
+        return 0;
+    hops = hops + 1;
+    return 1;
+}
+
+int DebugSession::hop_into(void) {
+    if (stepping != FOLLOW_INTO)
+        return 0;
+    if (hops >= 8)
+        return 0;
+    if (state != DEBUG_STOPPED)
+        return 0;
+    if (stop_readable() != 0)
+        return 0;
+    if (same_text(stopReason->c_str(), "breakpoint-hit"))
+        return 0;
+    hops = hops + 1;
+    return 1;
+}
+
+void DebugSession::submit_watch(int index, int rank) {
+    DebugWatch *watch;
+    String *command;
+    String *quoted;
+
+    if (index < 0 || index >= (int)watches->size())
+        return;
+    watch = watches->at(index);
+    if (rejected(watch->expression->c_str()) != 0) {
+        string_set(watch->value, "");
+        string_set(
+                watch->error,
+                "calls, assignment, and increment are rejected");
+        note_stage("watches");
+        return;
+    }
+    command = new String();
+    quoted = parser->quote(watch->expression->c_str());
+    command->append("-data-evaluate-expression ");
+    command->append(quoted->c_str());
+    submit(
+            command->c_str(),
+            PURPOSE_WATCH,
+            rank,
+            JOB_QUERY,
+            FOLLOW_NONE,
+            1,
+            index);
+}
+
+void DebugSession::enqueue_runtime(void) {
+    String *command;
+    String *quoted;
+    long index;
+
+    if (directory->size() > 0) {
+        command = new String();
+        quoted = parser->quote(directory->c_str());
+        command->append("-environment-cd ");
+        command->append(quoted->c_str());
+        submit(
+                command->c_str(),
+                PURPOSE_OTHER,
+                RANK_HIGH,
+                JOB_QUERY,
+                FOLLOW_NONE,
+                0,
+                0);
+    }
+    index = 0;
+    while (index < environment->pairs->size()) {
+        command = new String();
+        command->append("-gdb-set environment ");
+        command->append(
+                environment->pairs->at(index)->name->c_str());
+        command->append(" ");
+        quoted = parser->quote(
+                environment->pairs->at(index)->value->c_str());
+        command->append(quoted->c_str());
+        submit(
+                command->c_str(),
+                PURPOSE_OTHER,
+                RANK_HIGH,
+                JOB_QUERY,
+                FOLLOW_NONE,
+                0,
+                0);
+        index = index + 1;
+    }
+    command = new String();
+    command->append("-exec-arguments");
+    index = 0;
+    while (index < arguments->values->size()) {
+        command->append(" ");
+        quoted = parser->quote(
+                arguments->values->at(index)->c_str());
+        command->append(quoted->c_str());
+        index = index + 1;
+    }
+    submit(
+            command->c_str(),
+            PURPOSE_OTHER,
+            RANK_HIGH,
+            JOB_QUERY,
+            FOLLOW_NONE,
+            0,
+            0);
+}
+
+void DebugSession::enqueue_fill(void) {
+    long index;
+
+    string_set(fillLog, "");
+    submit(
+            "-stack-list-frames 0 30",
+            PURPOSE_FRAMES,
+            RANK_LOW,
+            JOB_QUERY,
+            FOLLOW_NONE,
+            0,
+            0);
+    submit(
+            "-break-list",
+            PURPOSE_BREAKS,
+            RANK_LOW,
+            JOB_QUERY,
+            FOLLOW_NONE,
+            0,
+            0);
+    submit(
+            "-thread-info",
+            PURPOSE_THREADS,
+            RANK_LOW,
+            JOB_QUERY,
+            FOLLOW_NONE,
+            0,
+            0);
+    submit(
+            "-stack-list-variables --all-values",
+            PURPOSE_LOCALS,
+            RANK_LOW,
+            JOB_QUERY,
+            FOLLOW_NONE,
+            0,
+            0);
+    index = 0;
+    while (index < watches->size() && index < 64) {
+        submit_watch((int)index, RANK_LOW);
+        index = index + 1;
+    }
+}
+
+void DebugSession::enqueue_fresh(void) {
+    reset_error();
     havePrev = 0;
     string_set(startBreak, "");
     missedCount = 0;
-    send_runtime();
-    if (breakAtStart) {
-        if (try_transact("-break-insert -t main", PURPOSE_BREAKS)) {
-            string_set(
-                    startBreak,
-                    lastValue->field("bkpt")->field(
-                        "number")->text());
+    stepping = FOLLOW_STOP;
+    hops = 0;
+    sawExec = 0;
+    flush_low();
+    submit(
+            "-break-list",
+            PURPOSE_SNAP,
+            RANK_HIGH,
+            JOB_QUERY,
+            FOLLOW_NONE,
+            0,
+            0);
+    enqueue_runtime();
+    if (breakAtStart != 0) {
+        submit(
+                "-break-insert -t main",
+                PURPOSE_START,
+                RANK_HIGH,
+                JOB_QUERY,
+                FOLLOW_NONE,
+                1,
+                0);
+    }
+    submit(
+            "-exec-run",
+            PURPOSE_RUN,
+            RANK_HIGH,
+            JOB_EXEC,
+            FOLLOW_STOP,
+            0,
+            0);
+}
+
+void DebugSession::apply_query(DebugJob *job) {
+    int index;
+    const char *number;
+
+    if (job == nullptr)
+        return;
+    if (job->purpose == PURPOSE_FRAMES) {
+        if (lastOk != 0)
+            apply_frames();
+        note_stage("stack");
+        return;
+    }
+    if (job->purpose == PURPOSE_BREAKS) {
+        if (lastOk != 0)
+            apply_breaks();
+        note_stage("breaks");
+        return;
+    }
+    if (job->purpose == PURPOSE_THREADS) {
+        if (lastOk != 0)
+            apply_threads();
+        note_stage("threads");
+        return;
+    }
+    if (job->purpose == PURPOSE_LOCALS) {
+        if (lastOk != 0)
+            apply_locals();
+        note_stage("locals");
+        return;
+    }
+    if (job->purpose == PURPOSE_WATCH) {
+        index = job->extra;
+        if (index >= 0 && index < (int)watches->size()) {
+            if (lastOk != 0) {
+                string_set(
+                        watches->at(index)->value,
+                        lastValue->field("value")->text());
+                string_set(watches->at(index)->error, "");
+            } else {
+                string_set(watches->at(index)->value, "");
+                string_set(
+                        watches->at(index)->error,
+                        lastMsg->c_str());
+            }
+        }
+        note_stage("watches");
+        return;
+    }
+    if (job->purpose == PURPOSE_SNAP) {
+        if (lastOk != 0) {
+            apply_breaks();
+            take_snap();
+        }
+        return;
+    }
+    if (job->purpose == PURPOSE_START) {
+        if (lastOk != 0) {
+            number = lastValue->field("bkpt")->field(
+                    "number")->text();
+            string_set(startBreak, number);
         } else {
             append_console("Break at start unavailable\n");
         }
+        return;
     }
-    command = new String();
-    command->append("-exec-run");
-    runStops = stopSerial;
-    runExits = exitSerial;
-    transact(command->c_str(), PURPOSE_RUN);
-}
-
-void DebugSession::wait_until_stop(void) {
-    wait_stop(15000, runStops, runExits);
-    if (state == DEBUG_EXITED)
-        report_unreached();
-    else if (state == DEBUG_STOPPED) {
-        refresh_stack();
-        refresh_locals();
-        refresh_threads();
-        refresh_breaks();
-        refresh_watches();
+    if (job->purpose == PURPOSE_UNREACHED) {
+        if (lastOk != 0) {
+            apply_breaks();
+            count_unreached();
+        }
+        update_status();
+        return;
+    }
+    if (job->purpose == PURPOSE_FRAME0) {
         selectedFrame = 0;
+        return;
     }
-    update_status();
-}
-
-void DebugSession::run_program(void) {
-    begin_run();
-    wait_until_stop();
-}
-
-void DebugSession::continue_program(void) {
-    if (state != DEBUG_STOPPED)
-        fail("DBG1000", "the program is not stopped");
-    prepare_frame();
-    runStops = stopSerial;
-    runExits = exitSerial;
-    transact("-exec-continue", PURPOSE_STEP);
-    wait_until_stop();
-}
-
-void DebugSession::step_over(void) {
-    String *file;
-    String *func;
-    int line;
-    int hops;
-
-    if (state != DEBUG_STOPPED)
-        fail("DBG1000", "the program is not stopped");
-    prepare_frame();
-    file = string_from(stopFile->c_str());
-    func = string_from(stopFunc->c_str());
-    line = stopLine;
-    hops = 0;
-    while (hops < 8) {
-        runStops = stopSerial;
-        runExits = exitSerial;
-        transact("-exec-next", PURPOSE_STEP);
-        wait_stop(15000, runStops, runExits);
-        hops = hops + 1;
-        if (state != DEBUG_STOPPED)
-            break;
-        if (same_text(stopReason->c_str(), "end-stepping-range")
-                == 0)
-            break;
-        if (stopLine != line)
-            break;
-        if (same_text(stopFile->c_str(), file->c_str()) == 0)
-            break;
-        if (same_text(stopFunc->c_str(), func->c_str()) == 0)
-            break;
+    if (job->purpose == PURPOSE_FRAME) {
+        selectedFrame = job->extra;
+        if (job->extra >= 0
+                && job->extra < (int)frames->size()) {
+            string_set(
+                    stopFile,
+                    frames->at(job->extra)->file->c_str());
+            string_set(
+                    stopFull,
+                    frames->at(job->extra)->fullname->c_str());
+            string_set(
+                    stopFunc,
+                    frames->at(job->extra)->func->c_str());
+            stopLine = frames->at(job->extra)->line;
+        }
+        submit(
+                "-stack-list-variables --all-values",
+                PURPOSE_LOCALS,
+                RANK_LOW,
+                JOB_QUERY,
+                FOLLOW_NONE,
+                0,
+                0);
+        index = 0;
+        while (index < (int)watches->size() && index < 64) {
+            submit_watch(index, RANK_LOW);
+            index = index + 1;
+        }
+        return;
     }
-    if (state == DEBUG_EXITED)
-        report_unreached();
-    else if (state == DEBUG_STOPPED) {
-        refresh_stack();
-        refresh_locals();
-        refresh_threads();
-        refresh_breaks();
-        refresh_watches();
+    if (job->purpose == PURPOSE_THREAD) {
         selectedFrame = 0;
+        submit(
+                "-stack-list-frames 0 30",
+                PURPOSE_FRAMES,
+                RANK_LOW,
+                JOB_QUERY,
+                FOLLOW_NONE,
+                0,
+                0);
+        submit(
+                "-stack-list-variables --all-values",
+                PURPOSE_LOCALS,
+                RANK_LOW,
+                JOB_QUERY,
+                FOLLOW_NONE,
+                0,
+                0);
+        index = 0;
+        while (index < (int)watches->size() && index < 64) {
+            submit_watch(index, RANK_LOW);
+            index = index + 1;
+        }
+        return;
     }
-    update_status();
+    if (job->purpose == PURPOSE_BREAK_CMD) {
+        if (lastOk != 0) {
+            number = lastValue->field("bkpt")->field(
+                    "number")->text();
+            if (number[0] != 0)
+                string_set(lastNumber, number);
+            submit(
+                    "-break-list",
+                    PURPOSE_BREAKS,
+                    RANK_LOW,
+                    JOB_QUERY,
+                    FOLLOW_NONE,
+                    0,
+                    0);
+        }
+        return;
+    }
 }
 
-void DebugSession::step_into(void) {
-    int hops;
-    int readable;
+void DebugSession::finish_exec(DebugJob *job) {
+    int follow;
 
-    if (state != DEBUG_STOPPED)
-        fail("DBG1000", "the program is not stopped");
-    prepare_frame();
-    runStops = stopSerial;
-    runExits = exitSerial;
-    transact("-exec-step", PURPOSE_STEP);
-    wait_stop(15000, runStops, runExits);
-    hops = 0;
-    while (hops < 8 && state == DEBUG_STOPPED) {
-        readable = 0;
-        if (stopFull->size() > 0
-                && access(stopFull->c_str(), R_OK) == 0)
-            readable = 1;
-        if (readable)
-            break;
-        if (same_text(stopReason->c_str(), "breakpoint-hit"))
-            break;
-        runStops = stopSerial;
-        runExits = exitSerial;
-        if (try_transact("-exec-finish", PURPOSE_STEP) == 0)
-            break;
-        wait_stop(15000, runStops, runExits);
-        hops = hops + 1;
+    follow = FOLLOW_STOP;
+    if (job != nullptr)
+        follow = job->follow;
+    active = nullptr;
+    phase = PHASE_IDLE;
+    if (state == DEBUG_EXITED) {
+        submit(
+                "-break-list",
+                PURPOSE_UNREACHED,
+                RANK_HIGH,
+                JOB_QUERY,
+                FOLLOW_NONE,
+                1,
+                0);
+        if (phase == PHASE_IDLE)
+            dispatch();
+        return;
     }
-    if (hops > 0) {
+    if (state != DEBUG_STOPPED) {
+        if (phase == PHASE_IDLE)
+            dispatch();
+        return;
+    }
+    if (follow == FOLLOW_OVER && hop_over() != 0) {
+        submit(
+                "-exec-next",
+                PURPOSE_STEP,
+                RANK_HIGH,
+                JOB_EXEC,
+                FOLLOW_OVER,
+                0,
+                0);
+        if (phase == PHASE_IDLE)
+            dispatch();
+        return;
+    }
+    if (follow == FOLLOW_INTO && hop_into() != 0) {
+        submit(
+                "-exec-finish",
+                PURPOSE_STEP,
+                RANK_HIGH,
+                JOB_EXEC,
+                FOLLOW_INTO,
+                1,
+                0);
+        if (phase == PHASE_IDLE)
+            dispatch();
+        return;
+    }
+    if (stepping == FOLLOW_INTO && hops > 0) {
         append_console("skipped ");
         append_console(format("{}", hops));
         append_console(" sourceless frames\n");
     }
-    if (state == DEBUG_EXITED)
-        report_unreached();
-    else if (state == DEBUG_STOPPED) {
-        refresh_stack();
-        refresh_locals();
-        refresh_threads();
-        refresh_breaks();
-        refresh_watches();
-        selectedFrame = 0;
-    }
+    stepping = FOLLOW_NONE;
+    selectedFrame = 0;
     update_status();
+    enqueue_fill();
+    if (phase == PHASE_IDLE)
+        dispatch();
+}
+
+void DebugSession::handle_result(void) {
+    DebugJob *job;
+    int ok;
+
+    job = active;
+    ok = lastOk;
+    if (job == nullptr) {
+        phase = PHASE_IDLE;
+        dispatch();
+        return;
+    }
+    if (ignoreActive != 0) {
+        ignoreActive = 0;
+        active = nullptr;
+        phase = PHASE_IDLE;
+        dispatch();
+        return;
+    }
+    if (job->kind == JOB_EXEC)
+        sawExec = 1;
+    if (ok == 0) {
+        if (job->soft != 0) {
+            if (job->kind == JOB_EXEC) {
+                job->follow = FOLLOW_STOP;
+                finish_exec(job);
+                return;
+            }
+            apply_query(job);
+            active = nullptr;
+            phase = PHASE_IDLE;
+            dispatch();
+            return;
+        }
+        if (lastMsg->size() > 0)
+            string_set(commandError, lastMsg->c_str());
+        else
+            string_set(commandError, "GDB rejected the command");
+        strictFailed = 1;
+        active = nullptr;
+        phase = PHASE_IDLE;
+        highQ = new JobVec();
+        lowQ = new JobVec();
+        return;
+    }
+    if (job->kind == JOB_EXEC) {
+        if (state == DEBUG_RUNNING
+                && stopSerial == seenStop
+                && exitSerial == seenExit) {
+            phase = PHASE_STOP;
+            update_status();
+            return;
+        }
+        finish_exec(job);
+        return;
+    }
+    active = nullptr;
+    phase = PHASE_IDLE;
+    apply_query(job);
+    if (phase == PHASE_IDLE)
+        dispatch();
+}
+
+void DebugSession::service(int timeoutMs) {
+    if (timeoutMs < 0)
+        timeoutMs = 0;
+    if (fromGdb < 0) {
+        phase = PHASE_IDLE;
+        active = nullptr;
+        highQ = new JobVec();
+        lowQ = new JobVec();
+        return;
+    }
+    if (phase == PHASE_IDLE)
+        dispatch();
+    if (phase == PHASE_IDLE)
+        return;
+    pump(timeoutMs);
+    if (gdbDead != 0) {
+        phase = PHASE_IDLE;
+        active = nullptr;
+        highQ = new JobVec();
+        lowQ = new JobVec();
+        fail("DBG3002", "GDB exited");
+    }
+    if (phase == PHASE_RESULT && resultSerial != seenResult)
+        handle_result();
+    else if (phase == PHASE_STOP
+            && (stopSerial != seenStop
+                || exitSerial != seenExit))
+        finish_exec(active);
+}
+
+void DebugSession::until_running(void) {
+    long start;
+
+    start = now_ms();
+    while (strictFailed == 0 && sawExec == 0) {
+        if (now_ms() - start > 15000)
+            fail("DBG3002", "GDB did not stop");
+        service(50);
+    }
+    if (strictFailed != 0)
+        fail("DBG3002", commandError->c_str());
+}
+
+void DebugSession::settle(int timeoutMs) {
+    long start;
+
+    start = now_ms();
+    while (is_idle() == 0) {
+        if (now_ms() - start > timeoutMs)
+            fail("DBG3002", "GDB did not stop");
+        service(50);
+    }
+    if (strictFailed != 0)
+        fail("DBG3002", commandError->c_str());
+}
+
+void DebugSession::start_step(const char *exec, int follow) {
+    if (state != DEBUG_STOPPED)
+        fail("DBG1000", "the program is not stopped");
+    if (accepts_user() == 0)
+        fail("DBG1000", "a command is still queued");
+    reset_error();
+    flush_low();
+    stepping = follow;
+    hops = 0;
+    if (follow == FOLLOW_OVER)
+        hops = 1;
+    hopLine = stopLine;
+    string_set(hopFile, stopFile->c_str());
+    string_set(hopFunc, stopFunc->c_str());
+    if (selectedFrame != 0) {
+        submit(
+                "-stack-select-frame 0",
+                PURPOSE_FRAME0,
+                RANK_HIGH,
+                JOB_QUERY,
+                FOLLOW_NONE,
+                0,
+                0);
+    }
+    submit(
+            exec,
+            PURPOSE_STEP,
+            RANK_HIGH,
+            JOB_EXEC,
+            follow,
+            0,
+            0);
+}
+
+void DebugSession::interrupt_now(void) {
+    DebugJob *job;
+
+    if (state != DEBUG_RUNNING)
+        fail("DBG1000", "the program is not running");
+    if (phase != PHASE_STOP)
+        fail("DBG1000", "the program is not running");
+    stepping = FOLLOW_STOP;
+    hops = 0;
+    active = nullptr;
+    job = make_job(
+            "-exec-interrupt",
+            PURPOSE_STEP,
+            RANK_HIGH,
+            JOB_EXEC,
+            FOLLOW_STOP,
+            0,
+            0);
+    active = job;
+    seenResult = resultSerial;
+    seenStop = stopSerial;
+    seenExit = exitSerial;
+    issue("-exec-interrupt", PURPOSE_STEP);
+    phase = PHASE_RESULT;
+}
+
+void DebugSession::queue_refresh(void) {
+    if (state != DEBUG_STOPPED)
+        return;
+    enqueue_fill();
+}
+
+void DebugSession::begin_run(void) {
+    if (state == DEBUG_EMPTY)
+        fail("DBG1000", "no target is loaded");
+    if (state == DEBUG_RUNNING)
+        fail("DBG1000", "the program is already running");
+    enqueue_fresh();
+    if (yield == 0)
+        until_running();
+}
+
+void DebugSession::wait_until_stop(void) {
+    settle(60000);
+}
+
+void DebugSession::run_program(void) {
+    if (state == DEBUG_STOPPED) {
+        continue_program();
+        return;
+    }
+    begin_run();
+    if (yield == 0)
+        settle(60000);
+}
+
+void DebugSession::continue_program(void) {
+    start_step("-exec-continue", FOLLOW_STOP);
+    if (yield == 0)
+        settle(60000);
+}
+
+void DebugSession::step_over(void) {
+    start_step("-exec-next", FOLLOW_OVER);
+    if (yield == 0)
+        settle(120000);
+}
+
+void DebugSession::step_into(void) {
+    start_step("-exec-step", FOLLOW_INTO);
+    if (yield == 0)
+        settle(120000);
 }
 
 void DebugSession::step_out(void) {
-    if (state != DEBUG_STOPPED)
-        fail("DBG1000", "the program is not stopped");
-    prepare_frame();
-    runStops = stopSerial;
-    runExits = exitSerial;
-    transact("-exec-finish", PURPOSE_STEP);
-    wait_until_stop();
+    start_step("-exec-finish", FOLLOW_STOP);
+    if (yield == 0)
+        settle(60000);
 }
 
 void DebugSession::interrupt_program(void) {
-    if (state != DEBUG_RUNNING)
-        fail("DBG1000", "the program is not running");
-    runStops = stopSerial;
-    runExits = exitSerial;
-    transact("-exec-interrupt", PURPOSE_STEP);
-    wait_until_stop();
+    interrupt_now();
+    if (yield == 0)
+        settle(20000);
 }
 
 void DebugSession::restart_program(void) {
     if (state == DEBUG_RUNNING) {
-        runStops = stopSerial;
-        runExits = exitSerial;
-        transact("-exec-interrupt", PURPOSE_STEP);
-        wait_stop(8000, runStops, runExits);
+        interrupt_now();
+        if (yield == 0)
+            settle(20000);
     }
+    if (state == DEBUG_EMPTY)
+        fail("DBG1000", "no target is loaded");
     begin_run();
-    wait_until_stop();
+    if (yield == 0)
+        settle(60000);
 }

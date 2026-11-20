@@ -1,9 +1,12 @@
 #ifndef DBG_SESSION
 #define DBG_SESSION
 
-/* Local GDB/MI session. Commands are synchronous: each call
- * writes one command and reads until its result. Execution
- * commands then wait until the inferior stops or exits.
+/* Local GDB/MI session. One command is in flight. User
+ * commands sit on a high-priority queue and may cancel a
+ * low-priority refresh. A refresh after a stop is stack,
+ * breakpoints, threads, locals, then watches. yield leaves
+ * the wait to the caller, so the GTK loop can keep running.
+ * Pause sends -exec-interrupt while the inferior runs.
  * Program output is the target stream plus raw lines that
  * GDB does not wrap. There is no pseudo-terminal. */
 
@@ -36,7 +39,37 @@ enum {
     PURPOSE_THREADS,
     PURPOSE_BREAKS,
     PURPOSE_WATCH,
-    PURPOSE_OTHER
+    PURPOSE_OTHER,
+    PURPOSE_SNAP,
+    PURPOSE_START,
+    PURPOSE_UNREACHED,
+    PURPOSE_FRAME0,
+    PURPOSE_FRAME,
+    PURPOSE_THREAD,
+    PURPOSE_BREAK_CMD
+};
+
+enum {
+    RANK_HIGH,
+    RANK_LOW
+};
+
+enum {
+    JOB_QUERY,
+    JOB_EXEC
+};
+
+enum {
+    FOLLOW_NONE,
+    FOLLOW_STOP,
+    FOLLOW_OVER,
+    FOLLOW_INTO
+};
+
+enum {
+    PHASE_IDLE,
+    PHASE_RESULT,
+    PHASE_STOP
 };
 
 class DebugBreak {
@@ -97,12 +130,25 @@ public:
     int enabled;
 };
 
+class DebugJob {
+public:
+    DebugJob();
+    String *text;
+    int purpose;
+    int rank;
+    int kind;
+    int follow;
+    int soft;
+    int extra;
+};
+
 VECTOR(BreakVec, DebugBreak *)
 VECTOR(FrameVec, DebugFrame *)
 VECTOR(VarVec, DebugVar *)
 VECTOR(WatchList, DebugWatch *)
 VECTOR(ThreadVec, DebugThread *)
 VECTOR(SnapVec, HitSnap *)
+VECTOR(JobVec, DebugJob *)
 
 class DebugSession {
 public:
@@ -128,6 +174,14 @@ public:
     void step_out(void);
     void interrupt_program(void);
     void restart_program(void);
+    void queue_refresh(void);
+    void service(int timeoutMs);
+    int is_idle(void);
+    int accepts_user(void);
+    int can_step(void);
+    int can_run(void);
+    int can_break(void);
+    int can_edit(void);
     void refresh_stack(void);
     void refresh_locals(void);
     void refresh_breaks(void);
@@ -219,6 +273,66 @@ public:
     int gdbPid;
     int inferiorPid;
     int gdbDead;
+    int yield;
+    int phase;
+    int ignoreActive;
+    int strictFailed;
+    int stepping;
+    int hops;
+    int hopLine;
+    int recordCommands;
+    int seenResult;
+    int seenStop;
+    int seenExit;
+    int sawExec;
+    JobVec *highQ;
+    JobVec *lowQ;
+    DebugJob *active;
+    String *hopFile;
+    String *hopFunc;
+    String *fillLog;
+    String *commandTrace;
+    String *commandError;
+    void reset_driver(void);
+    void reset_error(void);
+    void flush_low(void);
+    int should_queue(void);
+    int defer_job(const char *command, int purpose, int extra);
+    void submit(
+            const char *text,
+            int purpose,
+            int rank,
+            int kind,
+            int follow,
+            int soft,
+            int extra);
+    void dispatch(void);
+    void handle_result(void);
+    void finish_exec(DebugJob *job);
+    void apply_query(DebugJob *job);
+    void enqueue_fresh(void);
+    void enqueue_runtime(void);
+    void enqueue_fill(void);
+    void start_step(const char *exec, int follow);
+    void interrupt_now(void);
+    void until_running(void);
+    void settle(int timeoutMs);
+    void take_snap(void);
+    void count_unreached(void);
+    void submit_watch(int index, int rank);
+    void note_stage(const char *name);
+    int hop_over(void);
+    int hop_into(void);
+    int stop_readable(void);
+    int queued_low(const char *text);
+    DebugJob *make_job(
+            const char *text,
+            int purpose,
+            int rank,
+            int kind,
+            int follow,
+            int soft,
+            int extra);
 };
 
 #endif

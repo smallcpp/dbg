@@ -1,8 +1,9 @@
 #ifndef DBG_UI
 #define DBG_UI
 
-/* GTK window for the debugger. GDB calls are synchronous, so
- * the window does not take clicks while a run is in progress.
+/* GTK window for the debugger. GDB work returns to this
+ * loop: user commands are queued and may cancel a refresh,
+ * and Pause sends -exec-interrupt while the inferior runs.
  * The source view is read-only. Breakpoint lines are marked
  * in the text because there is no gutter widget. */
 
@@ -37,6 +38,9 @@ public:
     void save_project(void);
     void do_run(void);
     void do_pause(void);
+    void update_controls(void);
+    void arm(void);
+    void after_command(void);
     void do_into(void);
     void do_over(void);
     void do_out(void);
@@ -80,6 +84,8 @@ public:
     int painting;
     int cursorLine;
     int built;
+    int armed;
+    int saveOnIdle;
     Application *application;
     Window *window;
     Label *statusLabel;
@@ -113,6 +119,14 @@ public:
     FileDialog *loadDialog;
     FileDialog *sourceDialog;
     Button *runButton;
+    Button *pauseButton;
+    Button *intoButton;
+    Button *overButton;
+    Button *outButton;
+    Button *restartButton;
+    Button *loadButton;
+    MenuButton *breakMenu;
+    Spinner *pulse;
 };
 
 #endif

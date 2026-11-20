@@ -34,6 +34,24 @@ int main(int argc, char **argv) {
             same_text(app->runButton->label(), "Run"),
             "run button") == 0)
         return 1;
+    if (require_test(
+            app->pulse->spinning() == false,
+            "idle pulse") == 0)
+        return 1;
+    app->session->state = DEBUG_RUNNING;
+    app->session->phase = PHASE_STOP;
+    app->update_controls();
+    if (require_test(
+            app->pulse->spinning() == true,
+            "run pulse") == 0)
+        return 1;
+    app->session->state = DEBUG_EMPTY;
+    app->session->phase = PHASE_IDLE;
+    app->update_controls();
+    if (require_test(
+            app->pulse->spinning() == false,
+            "pulse stops") == 0)
+        return 1;
     app->do_run();
     if (require_test(
             app->statusLabel->text() != nullptr
